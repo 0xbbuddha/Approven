@@ -107,7 +107,12 @@ class ApprovalActivity : FragmentActivity() {
                     val sig = result.cryptoObject?.signature ?: return
                     sig.update(message)
                     val bytes = sig.sign()
-                    ConnectionManager.send(WireMessage(type = "approve_response", id = id, approved = true, signature = bytes))
+                    val ok = ConnectionManager.send(WireMessage(type = "approve_response", id = id, approved = true, signature = bytes))
+                    if (!ok) {
+                        status = "Lost the connection to the computer before the approval could be sent. Try again."
+                        showActions = false
+                        return
+                    }
                     finish()
                 }
 
@@ -150,9 +155,15 @@ class ApprovalActivity : FragmentActivity() {
                     val sig = result.cryptoObject?.signature ?: return
                     sig.update(message)
                     val bytes = sig.sign()
-                    ConnectionManager.send(
+                    val ok = ConnectionManager.send(
                         WireMessage(type = "enroll_response", id = id, publicKeyDer = pub.encoded, signature = bytes),
                     )
+                    if (!ok) {
+                        CryptoKeys.deleteKey()
+                        status = "Lost the connection to the computer before the key could be sent. Try again."
+                        showActions = false
+                        return
+                    }
                     val code = KeyCode.keyCode(pub)
                     val store = PairingStore(this@ApprovalActivity)
                     store.pinnedFingerprint = ConnectionManager.lastServerFingerprint

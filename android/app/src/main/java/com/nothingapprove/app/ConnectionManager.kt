@@ -113,6 +113,7 @@ object ConnectionManager {
             Log.w(TAG, "bad line from computer: $e")
             return
         }
+        Log.d(TAG, "received: ${msg.type} id=${msg.id}")
         when (msg.type) {
             "approve_request" -> listener?.onApproveRequest(msg)
             "enroll_request" -> listener?.onEnrollRequest(msg)
@@ -121,10 +122,23 @@ object ConnectionManager {
         }
     }
 
-    fun send(msg: WireMessage) {
-        synchronized(writeLock) {
-            out?.write((msg.toJson() + "\n").toByteArray(Charsets.UTF_8))
-            out?.flush()
+    /** Returns whether the write actually succeeded - a silent failure here was the whole point of a request reaching the phone, getting approved, and the computer still seeing only a timeout. */
+    fun send(msg: WireMessage): Boolean {
+        val stream = out
+        if (stream == null) {
+            Log.w(TAG, "send(${msg.type}): no connection")
+            return false
+        }
+        return try {
+            synchronized(writeLock) {
+                stream.write((msg.toJson() + "\n").toByteArray(Charsets.UTF_8))
+                stream.flush()
+            }
+            Log.d(TAG, "sent: ${msg.type} id=${msg.id}")
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "send(${msg.type}) failed: $e")
+            false
         }
     }
 
