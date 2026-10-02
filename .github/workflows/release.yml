@@ -54,7 +54,9 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+      # ubuntu-latest runners already ship an Android SDK with licenses
+      # accepted; android-actions/setup-android@v3 tries to install the
+      # long-removed legacy "tools" package and fails, so we skip it.
       - working-directory: android
         run: ./gradlew assembleRelease --console=plain
       - run: cp android/app/build/outputs/apk/release/app-release.apk approven.apk
