@@ -31,7 +31,7 @@ just mocked.
 ## Install
 
 Every push to `main` builds and publishes a
-[release](https://github.com/bbuddha/approven/releases/latest) with an
+[release](https://github.com/0xbbuddha/Approven/releases/latest) with an
 Arch package, a `PKGBUILD`, a Linux binary tarball, and the Android APK.
 
 ### Arch Linux
