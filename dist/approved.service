@@ -1,0 +1,20 @@
+[Unit]
+Description=nothing-approve daemon (phone fingerprint approval for sudo)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/approved
+Restart=on-failure
+RestartSec=2
+# No access to anything but its own data dir, the local socket it
+# creates itself, and the network. It never needs a shell, a home
+# directory write outside its own state, or any capability.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/nothing-approve %t/nothing-approve
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,1 @@
+auth	sufficient	pam_exec.so quiet stdout /usr/local/bin/approve-helper
