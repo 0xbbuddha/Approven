@@ -8,6 +8,7 @@ import java.net.Socket
 import java.security.MessageDigest
 import java.security.cert.X509Certificate
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.TrustManager
@@ -20,6 +21,21 @@ import javax.net.ssl.X509TrustManager
  * Service synchronously) and the background Service both call into it
  * directly, which is fine for a single-process app with exactly one
  * live connection.
+ *
+ * [connect] can legitimately be called more than once for the same
+ * target - the Service calls it from both onCreate and onStartCommand,
+ * and MainActivity calls it too on its own. A first version tore down
+ * and reopened the socket on every call with no guard at all: 2 calls
+ * arriving close together raced, each one's `disconnect()` capable of
+ * closing the *other* call's freshly-opened socket, which produced a
+ * connect/disconnect/reconnect churn roughly every 5 seconds (the
+ * reconnect backoff) - and meant an approval signed in the few seconds
+ * between 2 churns could find no connection left to send itself on.
+ * [generation] fixes this: each call that actually proceeds to open a
+ * socket owns a generation number, and every step after the connect
+ * checks it still holds the current one before touching shared state
+ * or deciding to reconnect - a stale call simply stops touching
+ * anything instead of fighting the newer one for the same fields.
  *
  * Trust-on-first-use: with no pinned fingerprint yet (during
  * enrollment), any certificate is accepted - the real proof of trust at
@@ -42,8 +58,16 @@ object ConnectionManager {
     @Volatile private var out: OutputStream? = null
     @Volatile private var listener: Listener? = null
     @Volatile private var connectedFingerprint: String? = null
+    @Volatile private var target: Pair<String, Int>? = null
+    // True from the moment a connect() call commits to opening a socket
+    // until that attempt's connection (however long it lives) finally
+    // ends - the one piece of state a second, concurrent call for the
+    // same target actually needs to check before deciding to back off.
+    @Volatile private var active = false
+    private val generation = AtomicInteger(0)
     private val executor = Executors.newCachedThreadPool()
     private val writeLock = Any()
+    private val stateLock = Any()
 
     fun setListener(l: Listener?) {
         listener = l
@@ -53,14 +77,30 @@ object ConnectionManager {
         get() = socket?.isConnected == true && socket?.isClosed == false
 
     /**
-     * Connects to host:port. When pinnedFingerprint is null (pairing),
-     * any certificate is accepted and its fingerprint is made available
-     * through [lastServerFingerprint] once connected, for the caller to
-     * pin after a successful enrollment. When it is set, only that
-     * exact certificate is accepted.
+     * Connects to host:port. A call for the same target while a
+     * connection to it is already open or being established is a
+     * no-op: the existing attempt owns the current generation and this
+     * call has nothing to add. A call for a *different* target (the
+     * user re-pairs to another computer) does take over, the same way
+     * [disconnect] always does.
      */
     fun connect(host: String, port: Int, pinnedFingerprint: String?, deviceId: String, deviceName: String) {
-        disconnect()
+        val myGen: Int
+        synchronized(stateLock) {
+            if (active && target == Pair(host, port)) {
+                return // already connecting or connected to this exact target
+            }
+            target = Pair(host, port)
+            active = true
+            myGen = generation.incrementAndGet()
+            try {
+                socket?.close()
+            } catch (_: Exception) {
+            }
+            socket = null
+            out = null
+        }
+
         executor.execute {
             try {
                 val trustManager = pinningTrustManager(pinnedFingerprint)
@@ -69,40 +109,66 @@ object ConnectionManager {
                 val raw = context.socketFactory.createSocket(host, port) as SSLSocket
                 raw.startHandshake()
 
-                val cert = raw.session.peerCertificates.firstOrNull() as? X509Certificate
-                connectedFingerprint = cert?.let { sha256Hex(it.encoded) }
+                if (!stillCurrent(myGen)) {
+                    raw.close()
+                    return@execute
+                }
 
-                socket = raw
-                out = raw.getOutputStream()
+                val cert = raw.session.peerCertificates.firstOrNull() as? X509Certificate
+                val fingerprint = cert?.let { sha256Hex(it.encoded) }
+
+                synchronized(stateLock) {
+                    if (!stillCurrent(myGen)) {
+                        raw.close()
+                        return@execute
+                    }
+                    socket = raw
+                    out = raw.getOutputStream()
+                    connectedFingerprint = fingerprint
+                }
                 send(WireMessage(type = "hello", deviceId = deviceId, deviceName = deviceName))
                 listener?.onConnected()
 
                 val reader = BufferedReader(InputStreamReader(raw.getInputStream(), Charsets.UTF_8))
-                while (true) {
+                while (stillCurrent(myGen)) {
                     val line = reader.readLine() ?: break
                     handleLine(line)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "connection ended: ${e.message}")
             } finally {
-                socket = null
-                out = null
-                listener?.onDisconnected()
+                if (stillCurrent(myGen)) {
+                    synchronized(stateLock) {
+                        if (stillCurrent(myGen)) {
+                            socket = null
+                            out = null
+                            active = false
+                        }
+                    }
+                    listener?.onDisconnected()
+                }
             }
         }
     }
+
+    private fun stillCurrent(myGen: Int) = generation.get() == myGen
 
     /** The fingerprint of the certificate presented by the most recent connection - read right after a successful enrollment, to pin it. */
     val lastServerFingerprint: String?
         get() = connectedFingerprint
 
     fun disconnect() {
-        try {
-            socket?.close()
-        } catch (_: Exception) {
+        synchronized(stateLock) {
+            generation.incrementAndGet() // invalidates any in-flight connect()'s loop and cleanup
+            target = null
+            active = false
+            try {
+                socket?.close()
+            } catch (_: Exception) {
+            }
+            socket = null
+            out = null
         }
-        socket = null
-        out = null
     }
 
     private fun handleLine(line: String) {
