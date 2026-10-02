@@ -30,6 +30,22 @@ just mocked.
 
 ## Install
 
+Every push to `main` builds and publishes a
+[release](https://github.com/bbuddha/approven/releases/latest) with an
+Arch package, a `PKGBUILD`, a Linux binary tarball, and the Android APK.
+
+### Arch Linux
+
+```sh
+makepkg -si   # from a checkout containing PKGBUILD
+```
+
+or grab the prebuilt `approven-*.pkg.tar.zst` from the latest release
+and `sudo pacman -U` it. Either way, `pacman` prints the PAM line and
+the remaining setup steps after install.
+
+### From source
+
 ```sh
 go build ./...   # sanity check
 sudo ./dist/install.sh
@@ -39,8 +55,8 @@ This builds the 3 binaries, installs them to `/usr/local/bin`, adds one
 line to `/etc/pam.d/sudo`, and enables `approved` as your systemd user
 service. It backs up `/etc/pam.d/sudo` before touching it.
 
-Then, on the phone, install `android/app/build/outputs/apk/debug/app-debug.apk`
-and open it.
+Then, on the phone, install the APK from the latest release (or build
+your own: `cd android && ./gradlew assembleDebug`) and open it.
 
 ### Pairing
 

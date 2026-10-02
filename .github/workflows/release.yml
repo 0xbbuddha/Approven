@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: tag
+        run: |
+          TAG="v0.1.${{ github.run_number }}"
+          git config user.name "approven-ci"
+          git config user.email "ci@users.noreply.github.com"
+          git tag -a "$TAG" -m "Automated release $TAG"
+          git push origin "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  build-go:
+    needs: tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - run: |
+          mkdir -p dist-bin
+          go build -trimpath -o dist-bin/approved ./cmd/approved
+          go build -trimpath -o dist-bin/approve-helper ./cmd/approve-helper
+          go build -trimpath -o dist-bin/approve-cli ./cmd/approve-cli
+          cp dist/approved.service dist/pam-line.txt dist/install.sh dist/uninstall.sh dist-bin/
+          tar -C dist-bin -czf approven-linux-amd64.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-bin
+          path: approven-linux-amd64.tar.gz
+
+  build-apk:
+    needs: tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - working-directory: android
+        run: ./gradlew assembleRelease --console=plain
+      - run: cp android/app/build/outputs/apk/release/app-release.apk approven.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: approven.apk
+
+  build-pkg:
+    needs: tag
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          pacman -Syu --noconfirm --needed go git sudo
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+      - run: sudo -u builder makepkg -f --noconfirm
+        env:
+          HOME: /home/builder
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-pkg
+          path: |
+            PKGBUILD
+            *.pkg.tar.zst
+
+  release:
+    needs: [tag, build-go, build-apk, build-pkg]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - run: |
+          mkdir -p out
+          cp artifacts/linux-bin/approven-linux-amd64.tar.gz out/
+          cp artifacts/apk/approven.apk out/
+          cp artifacts/arch-pkg/PKGBUILD out/
+          cp artifacts/arch-pkg/*.pkg.tar.zst out/
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.tag }}
+          generate_release_notes: true
+          files: out/*

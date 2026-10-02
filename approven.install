@@ -1,0 +1,21 @@
+post_install() {
+    echo ":: approven is installed but not yet wired up. To finish:"
+    echo ""
+    echo "   1. Add this as the FIRST auth line in /etc/pam.d/sudo:"
+    echo "        $(cat usr/share/doc/approven/pam-line.txt)"
+    echo ""
+    echo "   2. As your normal user: systemctl --user enable --now approved.service"
+    echo ""
+    echo "   3. Install the phone app, pair it, then: sudo approve-cli enroll"
+    echo ""
+    echo "   See /usr/share/doc/approven/README.md for details."
+}
+
+post_upgrade() {
+    post_install
+}
+
+pre_remove() {
+    echo ":: If you added the pam_exec line to /etc/pam.d/sudo, remove it by hand."
+    echo ":: Enrolled keys remain in /etc/approven - remove with: rm -rf /etc/approven"
+}
