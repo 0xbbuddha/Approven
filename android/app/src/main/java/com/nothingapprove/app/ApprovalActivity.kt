@@ -1,5 +1,6 @@
 package com.nothingapprove.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.biometric.BiometricPrompt
@@ -23,28 +24,39 @@ import com.nothingapprove.app.protocol.KeyCode
 
 /**
  * Shows one approval or enrollment request and, on Approve, asks for a
- * biometric check before signing. launchMode singleInstance in the
- * manifest: a second request while one is already on screen must not
- * stack a second copy of this activity on top of it.
+ * biometric check before signing.
+ *
+ * launchMode singleInstance in the manifest means a second request
+ * while this screen is already around does not stack a second copy -
+ * Android instead redelivers the new Intent to the *same* instance
+ * through onNewIntent, skipping onCreate entirely. The first version
+ * only ever read its extras in onCreate, so a request that arrived
+ * while an older instance was still alive (even one the user had
+ * already finished looking at - the instance was just never destroyed)
+ * showed the previous request's data, or nothing new at all. All of
+ * the request fields now live in Compose state that onNewIntent
+ * updates the same way onCreate does, and every piece of per-request
+ * state (status, showActions) resets alongside it.
  */
 class ApprovalActivity : FragmentActivity() {
     private enum class Kind { APPROVE, ENROLL }
+
+    private var kind by mutableStateOf(Kind.APPROVE)
+    private var id by mutableStateOf("")
+    private var host by mutableStateOf("")
+    private var user by mutableStateOf("")
+    private var service by mutableStateOf("")
+    private var tty by mutableStateOf("")
+    private var rhost by mutableStateOf("")
+    private var time by mutableStateOf(0L)
+    private var nonce by mutableStateOf("")
 
     private var status by mutableStateOf("")
     private var showActions by mutableStateOf(true)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        val kind = if (intent.getStringExtra("kind") == "enroll") Kind.ENROLL else Kind.APPROVE
-        val id = intent.getStringExtra("id") ?: ""
-        val host = intent.getStringExtra("host") ?: ""
-        val user = intent.getStringExtra("user") ?: ""
-        val service = intent.getStringExtra("service") ?: ""
-        val tty = intent.getStringExtra("tty") ?: ""
-        val rhost = intent.getStringExtra("rhost") ?: ""
-        val time = intent.getLongExtra("time", 0)
-        val nonce = intent.getStringExtra("nonce") ?: ""
+        applyIntent(intent)
 
         setContent {
             MaterialTheme {
@@ -82,6 +94,30 @@ class ApprovalActivity : FragmentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyIntent(intent)
+    }
+
+    private fun applyIntent(i: Intent) {
+        kind = if (i.getStringExtra("kind") == "enroll") Kind.ENROLL else Kind.APPROVE
+        id = i.getStringExtra("id") ?: ""
+        host = i.getStringExtra("host") ?: ""
+        user = i.getStringExtra("user") ?: ""
+        service = i.getStringExtra("service") ?: ""
+        tty = i.getStringExtra("tty") ?: ""
+        rhost = i.getStringExtra("rhost") ?: ""
+        time = i.getLongExtra("time", 0)
+        nonce = i.getStringExtra("nonce") ?: ""
+        // A fresh request, including one redelivered to this same
+        // instance: whatever a previous request left behind (an error
+        // message, the actions already hidden after an earlier
+        // approve/deny) must not bleed into this one.
+        status = ""
+        showActions = true
     }
 
     /**
