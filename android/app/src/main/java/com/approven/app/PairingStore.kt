@@ -1,4 +1,4 @@
-package com.nothingapprove.app
+package com.approven.app
 
 import android.content.Context
 import java.util.UUID

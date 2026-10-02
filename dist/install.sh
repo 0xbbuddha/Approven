@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs nothing-approve: builds the 3 binaries, installs them to
+# Installs approven: builds the 3 binaries, installs them to
 # /usr/local/bin, enables the user service, and adds the PAM line to
 # sudo. Run with sudo from the repository root:
 #   sudo ./dist/install.sh
@@ -27,8 +27,8 @@ install -m 0755 -o root -g root bin/approved /usr/local/bin/approved
 install -m 0755 -o root -g root bin/approve-helper /usr/local/bin/approve-helper
 install -m 0755 -o root -g root bin/approve-cli /usr/local/bin/approve-cli
 
-echo "Creating /etc/nothing-approve..."
-install -d -m 0755 -o root -g root /etc/nothing-approve
+echo "Creating /etc/approven..."
+install -d -m 0755 -o root -g root /etc/approven
 
 echo "Adding the PAM line to /etc/pam.d/sudo..."
 PAM_FILE=/etc/pam.d/sudo

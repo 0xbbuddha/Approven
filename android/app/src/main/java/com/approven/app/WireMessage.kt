@@ -1,4 +1,4 @@
-package com.nothingapprove.app
+package com.approven.app
 
 import android.util.Base64
 import org.json.JSONObject

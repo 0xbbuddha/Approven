@@ -30,7 +30,7 @@ func TestApproveBytesAreStable(t *testing.T) {
 	if string(b1) != string(b2) {
 		t.Fatalf("same request produced different bytes")
 	}
-	want := "nothing-approve-v1\n" +
+	want := "approven-v1\n" +
 		"host=eos\n" +
 		"user=bbuddha\n" +
 		"service=sudo\n" +
@@ -113,7 +113,7 @@ func TestEnrollBytesAreStable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Bytes: %v", err)
 	}
-	want := "nothing-approve-enroll-v1\n" +
+	want := "approven-enroll-v1\n" +
 		"host=eos\n" +
 		"user=bbuddha\n" +
 		"key=" + strings.Repeat("b2", 32) + "\n" +

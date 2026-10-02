@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "nothing-approve-android"
+rootProject.name = "approven-android"
 include(":app")

@@ -9,10 +9,10 @@ import (
 	"os/user"
 	"testing"
 
-	"nothing-approve/internal/daemon"
-	"nothing-approve/internal/ipc"
-	"nothing-approve/internal/keyfile"
-	"nothing-approve/internal/protocol"
+	"approven/internal/daemon"
+	"approven/internal/ipc"
+	"approven/internal/keyfile"
+	"approven/internal/protocol"
 )
 
 // signingTransport is a daemon.Transport that signs whatever ApproveFields
@@ -82,7 +82,7 @@ func setPAMEnv(t *testing.T, pairs map[string]string) {
 
 func TestRunApprovesWithAValidSignature(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("needs root: writes the trust-anchor file under /etc/nothing-approve")
+		t.Skip("needs root: writes the trust-anchor file under /etc/approven")
 	}
 	me, err := user.Current()
 	if err != nil {
@@ -111,7 +111,7 @@ func TestRunApprovesWithAValidSignature(t *testing.T) {
 
 func TestRunRefusesAWrongSignature(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("needs root: writes the trust-anchor file under /etc/nothing-approve")
+		t.Skip("needs root: writes the trust-anchor file under /etc/approven")
 	}
 	me, err := user.Current()
 	if err != nil {

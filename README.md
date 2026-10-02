@@ -1,19 +1,16 @@
-# nothing-approve
+# Approven
 
-Approve `sudo` with your phone's fingerprint. Independent implementation
-(not a fork) of the feature Flux (bjarneo/flux) calls "approve" -
-rebuilt from scratch, same security shape: an EC P-256 key in the
-Android Keystore that only signs after a biometric check, a root-owned
-trust-anchor file on the computer, and a helper that verifies a
-signature it rebuilds itself rather than trusting anything the network
-sends back. See `docs/approve.md` in bjarneo/flux for the reference
-design this follows.
+Approve `sudo` with your phone's fingerprint. An EC P-256 key lives in
+the Android Keystore and only signs after a biometric check; a
+root-owned trust-anchor file on the computer holds its public half; a
+PAM helper verifies a signature it rebuilds itself from its own PAM
+environment, rather than trusting anything the network sends back.
 
 ## What's here
 
 ```
 internal/protocol/      message format + ECDSA P-256 (shared contract with the phone)
-internal/keyfile/       the /etc/nothing-approve/<user>.pub trust anchor, strict checks
+internal/keyfile/       the /etc/approven/<user>.pub trust anchor, strict checks
 internal/ipc/           local Unix socket, SO_PEERCRED-checked
 internal/daemon/        relays local requests to whichever Transport reaches the phone
 internal/phonetransport/ the real Transport: a TLS server the phone dials into
@@ -66,31 +63,32 @@ sudo ./dist/uninstall.sh
 ```
 
 Removes the PAM line (with a backup), stops the service, removes the
-binaries. Leaves `/etc/nothing-approve` - remove by hand if you want the
+binaries. Leaves `/etc/approven` - remove by hand if you want the
 enrolled key gone too.
 
 ## What's verified and what isn't
 
 Everything in `internal/` and the 3 desktop `cmd/` binaries is tested,
 including 2 root-privileged integration tests that actually exercise a
-real signature verifying and a tampered one being refused, and a manual
-end-to-end smoke test (real daemon, real CLI, a TLS client standing in
-for the phone).
+real signature verifying and a tampered one being refused.
 
-The Android app compiles, passes its own unit tests (the message format
-is checked byte-for-byte against the same test vectors the Go side
-uses), and lints clean - but the Keystore/BiometricPrompt/foreground
-service path has not been exercised on a real device or emulator in
-this environment. That path needs a phone to actually confirm before
-you rely on it for real `sudo` access: pair it, try a real approval and
-a real denial, and try revoking the fingerprint enrollment on the phone
-to confirm the key really does stop working (see docs/approve.md's
-"Android" section for what that's supposed to do).
+The full phone-to-computer path (TLS pairing, biometric signing, a
+full-screen approval prompt reaching the lock screen) has been
+exercised end to end on a real device, including the failure modes
+that only show up there: a background service that cannot start an
+Activity without a full-screen-intent notification, a notification
+permission that has to be requested at runtime on Android 13+, writing
+to a socket from a BiometricPrompt callback (the main thread, which
+Android forbids for any network I/O), and a `singleInstance` Activity
+that needs `onNewIntent` to actually refresh for a second request.
 
 ## Not built yet
 
 - A way to change the port or the wait timeout without editing source.
-- `polkit` and lock-screen approval (docs/approve.md covers both; this
-  project only targets `sudo` so far).
+- `polkit` and lock-screen approval - this project only targets `sudo`
+  so far.
 - iOS/macOS apps - only Android exists here.
 - Automatic reconnect with backoff beyond a fixed 5-second retry.
+- Starting the Android app automatically after a phone reboot (it does
+  reconnect on its own after the computer comes back up, as long as
+  the app itself is still running).

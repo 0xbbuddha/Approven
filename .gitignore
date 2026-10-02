@@ -6,3 +6,4 @@
 *.pem
 *.key
 *.keystore
+!/android/release.keystore

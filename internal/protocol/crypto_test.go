@@ -41,9 +41,9 @@ func TestVerifyRejectsWrongKey(t *testing.T) {
 
 func TestVerifyRejectsTamperedMessage(t *testing.T) {
 	priv := genKey(t)
-	msg := []byte("nothing-approve-v1\nhost=eos\n")
+	msg := []byte("approven-v1\nhost=eos\n")
 	sig, _ := Sign(priv, msg)
-	tampered := []byte("nothing-approve-v1\nhost=evil\n")
+	tampered := []byte("approven-v1\nhost=evil\n")
 	if Verify(&priv.PublicKey, tampered, sig) {
 		t.Fatalf("Verify: a signature verified a message it was not made for")
 	}

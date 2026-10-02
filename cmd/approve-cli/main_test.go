@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"nothing-approve/internal/daemon"
-	"nothing-approve/internal/ipc"
-	"nothing-approve/internal/keyfile"
-	"nothing-approve/internal/protocol"
+	"approven/internal/daemon"
+	"approven/internal/ipc"
+	"approven/internal/keyfile"
+	"approven/internal/protocol"
 )
 
 func TestPromptKeyCodeAcceptsNormalizedMatch(t *testing.T) {

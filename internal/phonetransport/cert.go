@@ -50,7 +50,7 @@ func LoadOrCreateCert(dir string) (tls.Certificate, error) {
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "nothing-approve"},
+		Subject:               pkix.Name{CommonName: "approven"},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(certLifetime),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,

@@ -1,4 +1,4 @@
-package com.nothingapprove.app.protocol
+package com.approven.app.protocol
 
 import java.security.KeyPairGenerator
 import java.security.spec.ECGenParameterSpec

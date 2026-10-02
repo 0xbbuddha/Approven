@@ -17,8 +17,8 @@ import (
 // the other, and they are specific to this project so a signature made
 // for a different approval protocol can never pass as ours.
 const (
-	ApproveVersion = "nothing-approve-v1"
-	EnrollVersion  = "nothing-approve-enroll-v1"
+	ApproveVersion = "approven-v1"
+	EnrollVersion  = "approven-enroll-v1"
 
 	// MaxFieldLen is the longest a single field value may be.
 	MaxFieldLen = 256

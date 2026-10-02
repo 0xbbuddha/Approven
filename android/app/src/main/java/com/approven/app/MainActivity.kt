@@ -1,4 +1,4 @@
-package com.nothingapprove.app
+package com.approven.app
 
 import android.Manifest
 import android.content.Intent
@@ -66,7 +66,7 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxSize().padding(24.dp),
                         verticalArrangement = Arrangement.Center,
                     ) {
-                        Text("Nothing Approve")
+                        Text("Approven")
                         Text(status)
                         OutlinedTextField(value = host, onValueChange = { host = it }, label = { Text("Computer IP") })
                         OutlinedTextField(value = port, onValueChange = { port = it }, label = { Text("Port") })

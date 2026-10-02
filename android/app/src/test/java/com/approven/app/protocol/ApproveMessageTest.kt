@@ -1,4 +1,4 @@
-package com.nothingapprove.app.protocol
+package com.approven.app.protocol
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -20,7 +20,7 @@ class ApproveMessageTest {
 
     @Test
     fun approveBytesMatchTheGoSide() {
-        val want = "nothing-approve-v1\n" +
+        val want = "approven-v1\n" +
             "host=eos\n" +
             "user=bbuddha\n" +
             "service=sudo\n" +
@@ -96,7 +96,7 @@ class ApproveMessageTest {
             host = "eos", user = "bbuddha",
             keyHash = "b2".repeat(32), time = 1700000000L, nonce = "c3".repeat(32),
         )
-        val want = "nothing-approve-enroll-v1\n" +
+        val want = "approven-enroll-v1\n" +
             "host=eos\n" +
             "user=bbuddha\n" +
             "key=${"b2".repeat(32)}\n" +

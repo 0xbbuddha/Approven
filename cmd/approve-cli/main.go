@@ -17,10 +17,10 @@ import (
 	"strings"
 	"time"
 
-	"nothing-approve/internal/daemon"
-	"nothing-approve/internal/ipc"
-	"nothing-approve/internal/keyfile"
-	"nothing-approve/internal/protocol"
+	"approven/internal/daemon"
+	"approven/internal/ipc"
+	"approven/internal/keyfile"
+	"approven/internal/protocol"
 )
 
 func main() {
@@ -44,19 +44,19 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "nothing-approve:", err)
+		fmt.Fprintln(os.Stderr, "approven:", err)
 		os.Exit(1)
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `nothing-approve-cli enroll   pair a phone for sudo approval (run with sudo)
-nothing-approve-cli status   show whether a phone is connected
-nothing-approve-cli remove   remove the enrolled key for your user (run with sudo)`)
+	fmt.Fprintln(os.Stderr, `approven-cli enroll   pair a phone for sudo approval (run with sudo)
+approven-cli status   show whether a phone is connected
+approven-cli remove   remove the enrolled key for your user (run with sudo)`)
 }
 
 // targetUser returns the user an enroll/remove acts on: SUDO_USER when
-// run through sudo, so `sudo nothing-approve-cli enroll` enrolls the
+// run through sudo, so `sudo approven-cli enroll` enrolls the
 // person who ran sudo, not root.
 func targetUser() (name string, uid int, err error) {
 	if su := os.Getenv("SUDO_USER"); su != "" {
@@ -83,7 +83,7 @@ func runStatus() error {
 	}
 	conn, err := ipc.Dial(uid)
 	if err != nil {
-		return fmt.Errorf("nothing-approved is not running for %s: %w", name, err)
+		return fmt.Errorf("the approven daemon is not running for %s: %w", name, err)
 	}
 	defer conn.Close()
 	if err := ipc.WriteJSON(conn, daemon.Request{Cmd: "status"}); err != nil {
@@ -135,7 +135,7 @@ func runEnroll() error {
 
 	conn, err := ipc.Dial(uid)
 	if err != nil {
-		return fmt.Errorf("nothing-approved is not running for %s: %w", name, err)
+		return fmt.Errorf("the approven daemon is not running for %s: %w", name, err)
 	}
 	defer conn.Close()
 

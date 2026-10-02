@@ -1,4 +1,4 @@
-package com.nothingapprove.app
+package com.approven.app
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -17,11 +17,11 @@ import android.os.IBinder
  */
 class ConnectionService : Service() {
     companion object {
-        private const val STATUS_CHANNEL_ID = "nothing-approve-connection"
-        private const val ALERT_CHANNEL_ID = "nothing-approve-alert"
+        private const val STATUS_CHANNEL_ID = "approven-connection"
+        private const val ALERT_CHANNEL_ID = "approven-alert"
         private const val STATUS_NOTIFICATION_ID = 1
         private const val ALERT_NOTIFICATION_ID = 2
-        const val ACTION_DISCONNECT = "com.nothingapprove.app.DISCONNECT"
+        const val ACTION_DISCONNECT = "com.approven.app.DISCONNECT"
     }
 
     private var connecting = false
@@ -181,7 +181,7 @@ class ConnectionService : Service() {
             PendingIntent.FLAG_IMMUTABLE,
         )
         return Notification.Builder(this, STATUS_CHANNEL_ID)
-            .setContentTitle("Nothing Approve")
+            .setContentTitle("Approven")
             .setContentText(status)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentIntent(openApp)

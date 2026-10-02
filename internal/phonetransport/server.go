@@ -15,7 +15,7 @@ import (
 	"net"
 	"sync"
 
-	"nothing-approve/internal/daemon"
+	"approven/internal/daemon"
 )
 
 // wireMsg is the shape every line on the wire takes, in both
@@ -179,9 +179,7 @@ func (s *Server) PhoneName() string {
 
 // beginPending registers id as the one in-flight request and returns
 // the channel its response will arrive on, or an error when a request
-// is already in flight - matching the reference design's "another
-// approval waits for the same phone: fluxd refuses the request", so a
-// slow phone never lets 2 answers cross.
+// is already in flight, so a slow phone never lets 2 answers cross.
 func (s *Server) beginPending(id string) (chan wireMsg, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

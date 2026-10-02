@@ -12,7 +12,7 @@ import (
 	"net"
 	"time"
 
-	"nothing-approve/internal/ipc"
+	"approven/internal/ipc"
 )
 
 // Request is one line a local client (the PAM helper or the CLI) sends

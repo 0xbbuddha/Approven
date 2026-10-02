@@ -1,4 +1,4 @@
-package com.nothingapprove.app.protocol
+package com.approven.app.protocol
 
 /**
  * Builds and validates the exact bytes this phone signs to approve a
@@ -7,8 +7,8 @@ package com.nothingapprove.app.protocol
  * for the same fields, or a signature never verifies on the computer.
  */
 object ApproveMessage {
-    const val APPROVE_VERSION = "nothing-approve-v1"
-    const val ENROLL_VERSION = "nothing-approve-enroll-v1"
+    const val APPROVE_VERSION = "approven-v1"
+    const val ENROLL_VERSION = "approven-enroll-v1"
     const val MAX_FIELD_LEN = 256
     const val NONCE_HEX_LEN = 64
 

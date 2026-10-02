@@ -24,10 +24,10 @@ import (
 	"syscall"
 	"time"
 
-	"nothing-approve/internal/daemon"
-	"nothing-approve/internal/ipc"
-	"nothing-approve/internal/keyfile"
-	"nothing-approve/internal/protocol"
+	"approven/internal/daemon"
+	"approven/internal/ipc"
+	"approven/internal/keyfile"
+	"approven/internal/protocol"
 )
 
 // defaultWait is how long the helper waits for the phone when

@@ -1,6 +1,6 @@
 // Package keyfile validates the trust-anchor file: the enrolled phone's
 // public key, read by a helper that runs as root. The checks exist so
-// that nothing but `nothing-approve enroll`, also run as root, can ever
+// that nothing but `approven enroll`, also run as root, can ever
 // decide which key approves sudo for a user - not a symlink, not a file
 // in a directory the user can repoint, not a file of the wrong shape.
 package keyfile
@@ -25,7 +25,7 @@ const MaxSize = 16 * 1024
 // Fixed, like the design requires: no flag, no environment variable
 // changes it, so a user cannot point the helper at a key under their
 // own control.
-const Dir = "/etc/nothing-approve"
+const Dir = "/etc/approven"
 
 // Path returns the trust-anchor path for user.
 func Path(user string) string {

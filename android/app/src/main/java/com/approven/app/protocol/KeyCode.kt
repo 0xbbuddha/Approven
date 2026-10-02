@@ -1,4 +1,4 @@
-package com.nothingapprove.app.protocol
+package com.approven.app.protocol
 
 import java.security.MessageDigest
 import java.security.PublicKey

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"nothing-approve/internal/ipc"
+	"approven/internal/ipc"
 )
 
 // fakeTransport lets the tests drive the daemon's local protocol without

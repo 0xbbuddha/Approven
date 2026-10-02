@@ -11,7 +11,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="Nothing Approve"
+        android:label="Approven"
         android:theme="@style/Theme.NothingApprove">
 
         <activity

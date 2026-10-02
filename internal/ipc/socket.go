@@ -22,10 +22,10 @@ import (
 func RuntimeDir(uid int) string {
 	if uid == os.Getuid() {
 		if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
-			return filepath.Join(d, "nothing-approve")
+			return filepath.Join(d, "approven")
 		}
 	}
-	return filepath.Join("/run/user", fmt.Sprint(uid), "nothing-approve")
+	return filepath.Join("/run/user", fmt.Sprint(uid), "approven")
 }
 
 // SocketPath returns the socket path for uid.

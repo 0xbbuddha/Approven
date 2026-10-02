@@ -1,4 +1,4 @@
-package com.nothingapprove.app
+package com.approven.app
 
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
@@ -19,7 +19,7 @@ import java.security.spec.ECGenParameterSpec
  */
 object CryptoKeys {
     private const val KEYSTORE = "AndroidKeyStore"
-    private const val ALIAS = "nothing-approve-key"
+    private const val ALIAS = "approven-key"
 
     fun hasKey(): Boolean {
         val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }

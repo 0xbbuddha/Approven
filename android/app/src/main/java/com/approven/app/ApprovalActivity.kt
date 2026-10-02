@@ -1,4 +1,4 @@
-package com.nothingapprove.app
+package com.approven.app
 
 import android.content.Intent
 import android.os.Bundle
@@ -19,8 +19,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
-import com.nothingapprove.app.protocol.ApproveMessage
-import com.nothingapprove.app.protocol.KeyCode
+import com.approven.app.protocol.ApproveMessage
+import com.approven.app.protocol.KeyCode
 
 /**
  * Shows one approval or enrollment request and, on Approve, asks for a

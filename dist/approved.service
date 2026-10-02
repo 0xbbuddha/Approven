@@ -1,5 +1,5 @@
 [Unit]
-Description=nothing-approve daemon (phone fingerprint approval for sudo)
+Description=approven daemon (phone fingerprint approval for sudo)
 After=network.target
 
 [Service]

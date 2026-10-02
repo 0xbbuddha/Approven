@@ -29,6 +29,6 @@ sudo -u "$SUDO_USER" env XDG_RUNTIME_DIR="/run/user/$SUDO_UID" systemctl --user 
 
 rm -f /usr/local/bin/approved /usr/local/bin/approve-helper /usr/local/bin/approve-cli
 
-echo "Enrolled keys are left in /etc/nothing-approve. Remove with:"
-echo "  sudo rm -rf /etc/nothing-approve"
+echo "Enrolled keys are left in /etc/approven. Remove with:"
+echo "  sudo rm -rf /etc/approven"
 echo "Done."

@@ -5,20 +5,34 @@ plugins {
 }
 
 android {
-    namespace = "com.nothingapprove.app"
+    namespace = "com.approven.app"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.nothingapprove.app"
+        applicationId = "com.approven.app"
         minSdk = 29
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        create("release") {
+            // Checked into the repo on purpose: this isn't meant to prove
+            // identity, just to keep every release signed with the same
+            // key so updates install over each other instead of forcing
+            // an uninstall every time CI builds a new APK.
+            storeFile = file("release.keystore")
+            storePassword = "approven-release"
+            keyAlias = "approven"
+            keyPassword = "approven-release"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 

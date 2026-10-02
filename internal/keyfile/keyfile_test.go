@@ -110,10 +110,10 @@ func TestParsePublicKeyRejectsTrailingData(t *testing.T) {
 
 func TestWriteThenLoadRoundTrip(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("Write/Load round trip needs root to own /etc/nothing-approve and the key file")
+		t.Skip("Write/Load round trip needs root to own /etc/approven and the key file")
 	}
 	priv := genTestKey(t)
-	user := "nothing-approve-test-user"
+	user := "approven-test-user"
 	t.Cleanup(func() { _ = Remove(user) })
 
 	if err := Write(user, &priv.PublicKey, "device-1", "Test Phone"); err != nil {

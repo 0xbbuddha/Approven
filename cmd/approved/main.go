@@ -15,9 +15,9 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"nothing-approve/internal/daemon"
-	"nothing-approve/internal/ipc"
-	"nothing-approve/internal/phonetransport"
+	"approven/internal/daemon"
+	"approven/internal/ipc"
+	"approven/internal/phonetransport"
 )
 
 // DefaultPort is the TCP port the daemon listens on for phones. Not yet
@@ -75,7 +75,7 @@ func main() {
 
 // dataDir returns where the daemon keeps its own certificate.
 // $STATE_DIRECTORY is what systemd sets when the unit uses
-// StateDirectory=nothing-approve (dist/approved.service does): systemd
+// StateDirectory=approven (dist/approved.service does): systemd
 // creates that exact directory, writable, before the service's mount
 // namespace is even set up, which a hand-rolled ReadWritePaths under
 // ProtectHome cannot do for a path that does not exist yet. Outside
@@ -93,5 +93,5 @@ func dataDir() (string, error) {
 		}
 		base = filepath.Join(home, ".local", "share")
 	}
-	return filepath.Join(base, "nothing-approve"), nil
+	return filepath.Join(base, "approven"), nil
 }
