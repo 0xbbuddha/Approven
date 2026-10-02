@@ -117,7 +117,7 @@ class ConnectionService : Service() {
             putExtra("time", msg.time)
             putExtra("nonce", msg.nonce)
         }
-        showFullScreenAlert(intent, "Approve sudo?", "${msg.service} for ${msg.user} on ${msg.host}")
+        showFullScreenAlert(intent, "Approve sudo?", "${msg.service} for ${msg.user} on ${msg.host} - tap to approve or deny")
     }
 
     private fun alertEnroll(msg: WireMessage) {
