@@ -17,48 +17,49 @@ import android.os.IBinder
  */
 class ConnectionService : Service() {
     companion object {
-        private const val CHANNEL_ID = "nothing-approve-connection"
-        private const val NOTIFICATION_ID = 1
+        private const val STATUS_CHANNEL_ID = "nothing-approve-connection"
+        private const val ALERT_CHANNEL_ID = "nothing-approve-alert"
+        private const val STATUS_NOTIFICATION_ID = 1
+        private const val ALERT_NOTIFICATION_ID = 2
         const val ACTION_DISCONNECT = "com.nothingapprove.app.DISCONNECT"
     }
 
     private var connecting = false
+    private var stoppedByUser = false
 
     override fun onCreate() {
         super.onCreate()
-        createChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("Not connected"))
+        createChannels()
+        startForeground(STATUS_NOTIFICATION_ID, buildStatusNotification("Not connected"))
 
         ConnectionManager.setListener(object : ConnectionManager.Listener {
             override fun onConnected() {
                 connecting = false
-                updateNotification("Connected to ${PairingStore(this@ConnectionService).computerHost}")
+                updateStatusNotification("Connected to ${PairingStore(this@ConnectionService).computerHost}")
             }
 
             override fun onDisconnected() {
-                updateNotification(if (connecting) "Connecting..." else "Not connected")
+                updateStatusNotification(if (connecting) "Connecting..." else "Not connected")
                 if (!stoppedByUser) reconnectSoon()
             }
 
             override fun onApproveRequest(msg: WireMessage) {
-                launchApproval(msg)
+                alertApproval(msg)
             }
 
             override fun onEnrollRequest(msg: WireMessage) {
-                launchEnroll(msg)
+                alertEnroll(msg)
             }
         })
 
         connectIfConfigured()
     }
 
-    private var stoppedByUser = false
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_DISCONNECT) {
             stoppedByUser = true
             ConnectionManager.disconnect()
-            updateNotification("Not connected")
+            updateStatusNotification("Not connected")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
@@ -80,7 +81,7 @@ class ConnectionService : Service() {
         val store = PairingStore(this)
         val host = store.computerHost ?: return
         connecting = true
-        updateNotification("Connecting...")
+        updateStatusNotification("Connecting...")
         ConnectionManager.connect(host, store.computerPort, store.pinnedFingerprint, store.deviceId, store.deviceName)
     }
 
@@ -92,7 +93,18 @@ class ConnectionService : Service() {
         android.os.Handler(mainLooper).postDelayed({ if (!stoppedByUser) connectIfConfigured() }, 5000)
     }
 
-    private fun launchApproval(msg: WireMessage) {
+    /**
+     * A plain startActivity() from a Service that is not in the
+     * foreground is silently blocked on modern Android - no crash, no
+     * log, the Activity just never appears, which is exactly what made
+     * the first real approval look like nothing happened at all. A
+     * full-screen-intent notification is the one path Android still
+     * lets a background process use to put an Activity on screen
+     * immediately, the same mechanism an incoming call or an alarm
+     * uses - everything else here (a normal tap-to-open notification)
+     * remains blocked the same way startActivity was.
+     */
+    private fun alertApproval(msg: WireMessage) {
         val intent = Intent(this, ApprovalActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             putExtra("kind", "approve")
@@ -105,10 +117,10 @@ class ConnectionService : Service() {
             putExtra("time", msg.time)
             putExtra("nonce", msg.nonce)
         }
-        startActivity(intent)
+        showFullScreenAlert(intent, "Approve sudo?", "${msg.service} for ${msg.user} on ${msg.host}")
     }
 
-    private fun launchEnroll(msg: WireMessage) {
+    private fun alertEnroll(msg: WireMessage) {
         val intent = Intent(this, ApprovalActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             putExtra("kind", "enroll")
@@ -118,20 +130,48 @@ class ConnectionService : Service() {
             putExtra("time", msg.time)
             putExtra("nonce", msg.nonce)
         }
-        startActivity(intent)
+        showFullScreenAlert(intent, "Enroll this phone?", "For sudo on ${msg.host}")
     }
 
-    private fun createChannel() {
+    private fun showFullScreenAlert(activityIntent: Intent, title: String, text: String) {
+        val fullScreenPendingIntent = PendingIntent.getActivity(
+            this, ALERT_NOTIFICATION_ID, activityIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = Notification.Builder(this, ALERT_CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setPriority(Notification.PRIORITY_HIGH)
+            .setCategory(Notification.CATEGORY_CALL)
+            .setFullScreenIntent(fullScreenPendingIntent, true)
+            .setContentIntent(fullScreenPendingIntent)
+            .setAutoCancel(true)
+            .build()
+        val mgr = getSystemService(NotificationManager::class.java)
+        mgr.notify(ALERT_NOTIFICATION_ID, notification)
+    }
+
+    private fun createChannels() {
         val mgr = getSystemService(NotificationManager::class.java)
         mgr.createNotificationChannel(
             // LOW, not MIN: the whole point raised was that this
             // notification needs to actually be seen at a glance, not
             // just exist. LOW still makes no sound and does not peek.
-            NotificationChannel(CHANNEL_ID, "Computer connection", NotificationManager.IMPORTANCE_LOW),
+            NotificationChannel(STATUS_CHANNEL_ID, "Computer connection", NotificationManager.IMPORTANCE_LOW),
+        )
+        mgr.createNotificationChannel(
+            // HIGH + a full-screen intent is what actually puts the
+            // approval screen up from the background - anything less
+            // than HIGH and Android may not honor the full-screen
+            // intent at all, just queue a normal heads-up notification.
+            NotificationChannel(ALERT_CHANNEL_ID, "Approval requests", NotificationManager.IMPORTANCE_HIGH).apply {
+                enableVibration(true)
+            },
         )
     }
 
-    private fun buildNotification(status: String): Notification {
+    private fun buildStatusNotification(status: String): Notification {
         val openApp = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
@@ -140,7 +180,7 @@ class ConnectionService : Service() {
             this, 0, Intent(this, ConnectionService::class.java).setAction(ACTION_DISCONNECT),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        return Notification.Builder(this, CHANNEL_ID)
+        return Notification.Builder(this, STATUS_CHANNEL_ID)
             .setContentTitle("Nothing Approve")
             .setContentText(status)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
@@ -150,8 +190,8 @@ class ConnectionService : Service() {
             .build()
     }
 
-    private fun updateNotification(status: String) {
+    private fun updateStatusNotification(status: String) {
         val mgr = getSystemService(NotificationManager::class.java)
-        mgr.notify(NOTIFICATION_ID, buildNotification(status))
+        mgr.notify(STATUS_NOTIFICATION_ID, buildStatusNotification(status))
     }
 }
