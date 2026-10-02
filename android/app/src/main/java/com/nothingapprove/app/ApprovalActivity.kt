@@ -1,7 +1,6 @@
 package com.nothingapprove.app
 
 import android.os.Bundle
-import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.layout.Arrangement
@@ -12,14 +11,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import com.nothingapprove.app.protocol.ApproveMessage
 import com.nothingapprove.app.protocol.KeyCode
 
@@ -74,15 +72,30 @@ class ApprovalActivity : FragmentActivity() {
                             }) { Text("Approve") }
                             Button(onClick = {
                                 if (kind == Kind.APPROVE) {
-                                    ConnectionManager.send(WireMessage(type = "approve_response", id = id, approved = false))
+                                    sendInBackground(WireMessage(type = "approve_response", id = id, approved = false)) { finish() }
+                                } else {
+                                    finish()
                                 }
-                                finish()
                             }) { Text("Deny") }
                         }
                     }
                 }
             }
         }
+    }
+
+    /**
+     * ConnectionManager.send writes to a live socket, which Android
+     * forbids on the main thread (NetworkOnMainThreadException) - every
+     * call site here runs from a BiometricPrompt callback or a Compose
+     * click handler, both of which are the main thread. onDone always
+     * runs back on the main thread, since it is UI state.
+     */
+    private fun sendInBackground(msg: WireMessage, onDone: (Boolean) -> Unit) {
+        Thread {
+            val ok = ConnectionManager.send(msg)
+            runOnUiThread { onDone(ok) }
+        }.start()
     }
 
     private fun doApprove(id: String, host: String, user: String, service: String, tty: String, rhost: String, time: Long, nonce: String) {
@@ -107,18 +120,18 @@ class ApprovalActivity : FragmentActivity() {
                     val sig = result.cryptoObject?.signature ?: return
                     sig.update(message)
                     val bytes = sig.sign()
-                    val ok = ConnectionManager.send(WireMessage(type = "approve_response", id = id, approved = true, signature = bytes))
-                    if (!ok) {
-                        status = "Lost the connection to the computer before the approval could be sent. Try again."
-                        showActions = false
-                        return
+                    sendInBackground(WireMessage(type = "approve_response", id = id, approved = true, signature = bytes)) { ok ->
+                        if (!ok) {
+                            status = "Lost the connection to the computer before the approval could be sent. Try again."
+                            showActions = false
+                        } else {
+                            finish()
+                        }
                     }
-                    finish()
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    ConnectionManager.send(WireMessage(type = "approve_response", id = id, approved = false))
-                    finish()
+                    sendInBackground(WireMessage(type = "approve_response", id = id, approved = false)) { finish() }
                 }
             },
         )
@@ -155,21 +168,22 @@ class ApprovalActivity : FragmentActivity() {
                     val sig = result.cryptoObject?.signature ?: return
                     sig.update(message)
                     val bytes = sig.sign()
-                    val ok = ConnectionManager.send(
+                    sendInBackground(
                         WireMessage(type = "enroll_response", id = id, publicKeyDer = pub.encoded, signature = bytes),
-                    )
-                    if (!ok) {
-                        CryptoKeys.deleteKey()
-                        status = "Lost the connection to the computer before the key could be sent. Try again."
-                        showActions = false
-                        return
+                    ) { ok ->
+                        if (!ok) {
+                            CryptoKeys.deleteKey()
+                            status = "Lost the connection to the computer before the key could be sent. Try again."
+                            showActions = false
+                        } else {
+                            val code = KeyCode.keyCode(pub)
+                            val store = PairingStore(this@ApprovalActivity)
+                            store.pinnedFingerprint = ConnectionManager.lastServerFingerprint
+                            store.enrolledUser = user
+                            status = "Code: $code\nType this on the computer."
+                            showActions = false
+                        }
                     }
-                    val code = KeyCode.keyCode(pub)
-                    val store = PairingStore(this@ApprovalActivity)
-                    store.pinnedFingerprint = ConnectionManager.lastServerFingerprint
-                    store.enrolledUser = user
-                    status = "Code: $code\nType this on the computer."
-                    showActions = false
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
