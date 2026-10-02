@@ -73,9 +73,18 @@ func main() {
 	}
 }
 
-// dataDir returns where the daemon keeps its own certificate: under
-// XDG_DATA_HOME, like any other per-user application state.
+// dataDir returns where the daemon keeps its own certificate.
+// $STATE_DIRECTORY is what systemd sets when the unit uses
+// StateDirectory=nothing-approve (dist/approved.service does): systemd
+// creates that exact directory, writable, before the service's mount
+// namespace is even set up, which a hand-rolled ReadWritePaths under
+// ProtectHome cannot do for a path that does not exist yet. Outside
+// systemd - running approved by hand, as the smoke tests in this repo
+// do - XDG_DATA_HOME is the right fallback.
 func dataDir() (string, error) {
+	if sd := os.Getenv("STATE_DIRECTORY"); sd != "" {
+		return sd, nil
+	}
 	base := os.Getenv("XDG_DATA_HOME")
 	if base == "" {
 		home, err := os.UserHomeDir()

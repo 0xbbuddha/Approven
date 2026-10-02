@@ -52,7 +52,11 @@ install -m 0644 -o "$SUDO_USER" -g "$SUDO_USER" dist/approved.service "$USER_HOM
 
 SUDO_UID=$(id -u "$SUDO_USER")
 sudo -u "$SUDO_USER" env XDG_RUNTIME_DIR="/run/user/$SUDO_UID" systemctl --user daemon-reload
-sudo -u "$SUDO_USER" env XDG_RUNTIME_DIR="/run/user/$SUDO_UID" systemctl --user enable --now approved.service
+sudo -u "$SUDO_USER" env XDG_RUNTIME_DIR="/run/user/$SUDO_UID" systemctl --user enable approved.service
+# restart, not "enable --now": on a re-run, the service is usually
+# already active, and --now only starts a stopped unit - it never picks
+# up a changed unit file or a rebuilt binary on its own.
+sudo -u "$SUDO_USER" env XDG_RUNTIME_DIR="/run/user/$SUDO_UID" systemctl --user restart approved.service
 
 echo
 echo "Installed. Next:"

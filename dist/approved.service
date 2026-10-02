@@ -7,14 +7,16 @@ Type=simple
 ExecStart=/usr/local/bin/approved
 Restart=on-failure
 RestartSec=2
-# No access to anything but its own data dir, the local socket it
-# creates itself, and the network. It never needs a shell, a home
-# directory write outside its own state, or any capability.
+# Kept deliberately simple after 2 rounds of sandboxing directives that
+# each broke something subtle: ProtectSystem=strict + ReadWritePaths
+# failed to start at all (the target directory does not exist yet, and
+# a plain ReadWritePaths cannot create one under ProtectHome), and even
+# once that was fixed with StateDirectory=/RuntimeDirectory=, the same
+# namespacing made a root caller's SO_PEERCRED show up as uid 65534
+# (nobody) to this process, since root in the host's user namespace is
+# not root in a namespaced one. NoNewPrivileges alone costs nothing and
+# needs no directory of its own.
 NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=%h/.local/share/nothing-approve %t/nothing-approve
-PrivateTmp=yes
 
 [Install]
 WantedBy=default.target
