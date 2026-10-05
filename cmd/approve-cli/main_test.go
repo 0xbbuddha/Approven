@@ -47,6 +47,10 @@ type enrollTransport struct {
 	tamper   bool
 	deviceID string
 	name     string
+
+	gotAck      bool
+	gotAckOK    bool
+	gotAckError string
 }
 
 func (e *enrollTransport) Connected() bool   { return true }
@@ -78,6 +82,11 @@ func (e *enrollTransport) SendEnroll(ctx context.Context, req daemon.EnrollField
 		return daemon.EnrollResult{}, err
 	}
 	return daemon.EnrollResult{PublicKeyDER: der, DeviceID: e.deviceID, DeviceName: e.name, Signature: sig}, nil
+}
+
+func (e *enrollTransport) SendEnrollResult(nonce string, ok bool, errMsg string) error {
+	e.gotAck, e.gotAckOK, e.gotAckError = true, ok, errMsg
+	return nil
 }
 
 func startCLIDaemon(t *testing.T, uid int, tr daemon.Transport) {
@@ -159,6 +168,9 @@ func TestRunEnrollWritesKeyOnValidSignature(t *testing.T) {
 	if got.X.Cmp(priv.PublicKey.X) != 0 {
 		t.Fatalf("enrolled key does not match the phone's key")
 	}
+	if !tr.gotAck || !tr.gotAckOK {
+		t.Fatalf("the phone was not told enrollment succeeded: gotAck=%v ok=%v", tr.gotAck, tr.gotAckOK)
+	}
 	_ = me
 }
 
@@ -196,5 +208,47 @@ func TestRunEnrollRejectsTamperedSignature(t *testing.T) {
 	}
 	if _, err := keyfile.Load(realUser); err == nil {
 		t.Fatalf("a key file was written despite a tampered signature")
+	}
+	if !tr.gotAck || tr.gotAckOK {
+		t.Fatalf("the phone was not told enrollment failed: gotAck=%v ok=%v", tr.gotAck, tr.gotAckOK)
+	}
+}
+
+func TestRunEnrollSendsFailureAckWhenCodeDoesNotMatch(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root")
+	}
+	realUser := os.Getenv("SUDO_USER")
+	if realUser == "" {
+		t.Skip("run this via sudo so SUDO_USER names a non-root account to enroll")
+	}
+	t.Cleanup(func() { _ = keyfile.Remove(realUser) })
+
+	u, err := user.Lookup(realUser)
+	if err != nil {
+		t.Fatalf("user.Lookup(%s): %v", realUser, err)
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		t.Fatalf("Atoi: %v", err)
+	}
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	tr := &enrollTransport{priv: priv, deviceID: "dev1", name: "Test Phone"}
+	startCLIDaemon(t, uid, tr)
+
+	withStdin(t, "wrong\nwrong\nwrong\n")
+
+	if err := runEnroll(); err == nil {
+		t.Fatalf("runEnroll: expected an error when the typed code never matches")
+	}
+	if _, err := keyfile.Load(realUser); err == nil {
+		t.Fatalf("a key file was written despite a non-matching code")
+	}
+	if !tr.gotAck || tr.gotAckOK {
+		t.Fatalf("the phone was not told enrollment failed: gotAck=%v ok=%v", tr.gotAck, tr.gotAckOK)
 	}
 }

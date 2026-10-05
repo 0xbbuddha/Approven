@@ -43,6 +43,9 @@ type wireMsg struct {
 
 	// enroll_response (phone -> daemon)
 	PublicKeyDER []byte `json:"public_key_der,omitempty"`
+
+	// enroll_result (daemon -> phone): Approved doubles as "succeeded".
+	Error string `json:"error,omitempty"`
 }
 
 // Server is a daemon.Transport backed by a TLS listener. The zero value
@@ -262,4 +265,13 @@ func (s *Server) SendEnroll(ctx context.Context, req daemon.EnrollFields) (daemo
 		_ = s.writeMsg(wireMsg{Type: "cancel", ID: req.Nonce})
 		return daemon.EnrollResult{}, daemon.ErrTimedOut
 	}
+}
+
+// SendEnrollResult implements daemon.Transport. It is fire-and-forget:
+// the phone has nothing to answer, and a connection that happens to be
+// gone by the time this is called just means the phone will never
+// learn the outcome, the same as if it had closed the app right after
+// sending enroll_response.
+func (s *Server) SendEnrollResult(nonce string, ok bool, errMsg string) error {
+	return s.writeMsg(wireMsg{Type: "enroll_result", ID: nonce, Approved: ok, Error: errMsg})
 }

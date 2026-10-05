@@ -24,6 +24,7 @@ data class WireMessage(
     val approved: Boolean = false,
     val signature: ByteArray? = null,
     val publicKeyDer: ByteArray? = null,
+    val error: String = "",
 ) {
     fun toJson(): String {
         val o = JSONObject()
@@ -41,6 +42,7 @@ data class WireMessage(
         if (approved) o.put("approved", true)
         if (signature != null) o.put("signature", Base64.encodeToString(signature, Base64.NO_WRAP))
         if (publicKeyDer != null) o.put("public_key_der", Base64.encodeToString(publicKeyDer, Base64.NO_WRAP))
+        if (error.isNotEmpty()) o.put("error", error)
         return o.toString()
     }
 
@@ -62,6 +64,7 @@ data class WireMessage(
                 approved = o.optBoolean("approved"),
                 signature = o.optString("signature", "").let { if (it.isEmpty()) null else Base64.decode(it, Base64.NO_WRAP) },
                 publicKeyDer = o.optString("public_key_der", "").let { if (it.isEmpty()) null else Base64.decode(it, Base64.NO_WRAP) },
+                error = o.optString("error"),
             )
         }
     }

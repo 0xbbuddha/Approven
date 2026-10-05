@@ -167,6 +167,7 @@ func runEnroll() error {
 
 	ecdsaPub, err := asECDSA(resp.PublicKeyDER)
 	if err != nil {
+		sendEnrollAck(uid, nonce, false, "sent a key this program could not use")
 		return fmt.Errorf("the phone sent a key this program could not use: %w", err)
 	}
 
@@ -178,35 +179,63 @@ func runEnroll() error {
 	// (which, on the phone, only happens after the biometric check).
 	keyHash, err := protocol.KeyHash(ecdsaPub)
 	if err != nil {
+		sendEnrollAck(uid, nonce, false, err.Error())
 		return err
 	}
 	enrollReq := protocol.EnrollRequest{Host: host, User: name, KeyHash: keyHash, Time: reqTime, Nonce: nonce}
 	message, err := enrollReq.Bytes()
 	if err != nil {
+		sendEnrollAck(uid, nonce, false, err.Error())
 		return err
 	}
 	if !protocol.Verify(ecdsaPub, message, resp.EnrollSig) {
+		sendEnrollAck(uid, nonce, false, "the enrollment signature did not verify")
 		return fmt.Errorf("the phone's enrollment signature did not verify; nothing was written")
 	}
 
 	code, err := protocol.KeyCode(ecdsaPub)
 	if err != nil {
+		sendEnrollAck(uid, nonce, false, err.Error())
 		return err
 	}
 	fmt.Println("Type the code shown on the phone:")
 	ok, err := promptKeyCode(code, os.Stdin)
 	if err != nil {
+		sendEnrollAck(uid, nonce, false, err.Error())
 		return err
 	}
 	if !ok {
+		sendEnrollAck(uid, nonce, false, "the typed code did not match")
 		return fmt.Errorf("the typed code did not match after 3 tries; nothing was written")
 	}
 
 	if err := keyfile.Write(name, ecdsaPub, resp.DeviceID, resp.DeviceName); err != nil {
+		sendEnrollAck(uid, nonce, false, err.Error())
 		return err
 	}
+	sendEnrollAck(uid, nonce, true, "")
 	fmt.Printf("Enrolled %s for sudo approval on %s.\n", resp.DeviceName, host)
 	return nil
+}
+
+// sendEnrollAck tells the phone, on a fresh connection (the one
+// "enroll" used is already closed by the time this runs), whether the
+// enrollment actually succeeded once the human typed the code. It is
+// best-effort: the phone showing nothing once this step finished -
+// even on success - was the actual bug this exists to fix, but a
+// daemon or phone that is gone by now has no one left to tell anyway,
+// and this must never be the reason `enroll` itself reports failure.
+func sendEnrollAck(uid int, nonce string, ok bool, errMsg string) {
+	conn, err := ipc.Dial(uid)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	if err := ipc.WriteJSON(conn, daemon.Request{Cmd: "enroll_ack", EnrollNonce: nonce, AckOK: ok, AckError: errMsg}); err != nil {
+		return
+	}
+	var resp daemon.Response
+	_ = ipc.NewLineReader(conn).ReadJSON(&resp)
 }
 
 func asECDSA(der []byte) (*ecdsa.PublicKey, error) {

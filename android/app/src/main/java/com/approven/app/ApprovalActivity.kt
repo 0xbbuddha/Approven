@@ -103,6 +103,17 @@ class ApprovalActivity : FragmentActivity() {
     }
 
     private fun applyIntent(i: Intent) {
+        if (i.getStringExtra("kind") == "enroll_result") {
+            // A reply to the enrollment this screen already showed a
+            // code for, not a new request - leave the request fields
+            // alone and just report what the computer side decided.
+            kind = Kind.ENROLL
+            val ok = i.getBooleanExtra("ok", false)
+            val error = i.getStringExtra("error") ?: ""
+            status = if (ok) "Enrolled successfully." else "Enrollment failed: $error"
+            showActions = false
+            return
+        }
         kind = if (i.getStringExtra("kind") == "enroll") Kind.ENROLL else Kind.APPROVE
         id = i.getStringExtra("id") ?: ""
         host = i.getStringExtra("host") ?: ""

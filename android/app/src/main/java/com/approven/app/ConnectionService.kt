@@ -21,6 +21,7 @@ class ConnectionService : Service() {
         private const val ALERT_CHANNEL_ID = "approven-alert"
         private const val STATUS_NOTIFICATION_ID = 1
         private const val ALERT_NOTIFICATION_ID = 2
+        private const val ENROLL_RESULT_NOTIFICATION_ID = 3
         const val ACTION_DISCONNECT = "com.approven.app.DISCONNECT"
     }
 
@@ -49,6 +50,10 @@ class ConnectionService : Service() {
 
             override fun onEnrollRequest(msg: WireMessage) {
                 alertEnroll(msg)
+            }
+
+            override fun onEnrollResult(msg: WireMessage) {
+                notifyEnrollResult(msg)
             }
         })
 
@@ -131,6 +136,41 @@ class ConnectionService : Service() {
             putExtra("nonce", msg.nonce)
         }
         showFullScreenAlert(intent, "Enroll this phone?", "For sudo on ${msg.host}")
+    }
+
+    /**
+     * The daemon sends this after the human finishes typing the code
+     * on the computer - the earlier enroll_response ack only confirmed
+     * the phone's signature reached the daemon, not that enrollment
+     * actually completed. Without this, the phone's screen was stuck
+     * forever on "type this on the computer" even after everything
+     * succeeded. Updates the enrollment screen in place when it is
+     * still around (the common case: the user is looking at the code
+     * right now) and always posts a plain notification too, since a
+     * background-started activity update can be silently dropped the
+     * same way a fresh approval request's startActivity can be.
+     */
+    private fun notifyEnrollResult(msg: WireMessage) {
+        val intent = Intent(this, ApprovalActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra("kind", "enroll_result")
+            putExtra("id", msg.id)
+            putExtra("ok", msg.approved)
+            putExtra("error", msg.error)
+        }
+        try {
+            startActivity(intent)
+        } catch (_: Exception) {
+        }
+
+        val text = if (msg.approved) "Enrolled successfully." else "Enrollment failed: ${msg.error}"
+        val notification = Notification.Builder(this, STATUS_CHANNEL_ID)
+            .setContentTitle("Approven")
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(ENROLL_RESULT_NOTIFICATION_ID, notification)
     }
 
     private fun showFullScreenAlert(activityIntent: Intent, title: String, text: String) {

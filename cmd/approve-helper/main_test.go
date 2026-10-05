@@ -52,6 +52,10 @@ func (s *signingTransport) SendEnroll(ctx context.Context, req daemon.EnrollFiel
 	return daemon.EnrollResult{}, nil
 }
 
+func (s *signingTransport) SendEnrollResult(nonce string, ok bool, errMsg string) error {
+	return nil
+}
+
 func startDaemonFor(t *testing.T, uid int, tr daemon.Transport) {
 	t.Helper()
 	l, err := ipc.Listen(uid)

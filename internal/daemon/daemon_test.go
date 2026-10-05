@@ -25,6 +25,10 @@ type fakeTransport struct {
 
 	gotApprove ApproveFields
 	gotEnroll  EnrollFields
+
+	gotAckNonce string
+	gotAckOK    bool
+	gotAckError string
 }
 
 func (f *fakeTransport) Connected() bool   { return f.connected }
@@ -45,6 +49,11 @@ func (f *fakeTransport) SendApprove(ctx context.Context, req ApproveFields) ([]b
 func (f *fakeTransport) SendEnroll(ctx context.Context, req EnrollFields) (EnrollResult, error) {
 	f.gotEnroll = req
 	return f.enrollRes, f.enrollErr
+}
+
+func (f *fakeTransport) SendEnrollResult(nonce string, ok bool, errMsg string) error {
+	f.gotAckNonce, f.gotAckOK, f.gotAckError = nonce, ok, errMsg
+	return nil
 }
 
 // startTestDaemon starts a Daemon backed by tr, listening on a socket
@@ -163,6 +172,32 @@ func TestEnrollSuccess(t *testing.T) {
 	}
 	if string(resp.PublicKeyDER) != "der-bytes" || resp.DeviceID != "dev1" || resp.DeviceName != "Pixel" {
 		t.Fatalf("unexpected enroll response: %+v", resp)
+	}
+}
+
+func TestEnrollAckRelaysToTransport(t *testing.T) {
+	tr := &fakeTransport{connected: true}
+	uid := startTestDaemon(t, tr)
+
+	resp := roundTrip(t, uid, Request{Cmd: "enroll_ack", EnrollNonce: "n8", AckOK: true})
+	if !resp.OK {
+		t.Fatalf("resp.OK = false, error = %q", resp.Error)
+	}
+	if tr.gotAckNonce != "n8" || !tr.gotAckOK {
+		t.Fatalf("transport did not get the ack: nonce=%q ok=%v", tr.gotAckNonce, tr.gotAckOK)
+	}
+}
+
+func TestEnrollAckRelaysFailure(t *testing.T) {
+	tr := &fakeTransport{connected: true}
+	uid := startTestDaemon(t, tr)
+
+	resp := roundTrip(t, uid, Request{Cmd: "enroll_ack", EnrollNonce: "n9", AckOK: false, AckError: "the typed code did not match"})
+	if !resp.OK {
+		t.Fatalf("resp.OK = false, error = %q", resp.Error)
+	}
+	if tr.gotAckNonce != "n9" || tr.gotAckOK || tr.gotAckError != "the typed code did not match" {
+		t.Fatalf("transport did not get the expected failure ack: nonce=%q ok=%v error=%q", tr.gotAckNonce, tr.gotAckOK, tr.gotAckError)
 	}
 }
 

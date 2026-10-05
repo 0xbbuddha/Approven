@@ -36,6 +36,16 @@ type Request struct {
 	// enroll: same idea, for the enrollment message.
 	EnrollTime  int64  `json:"enroll_time,omitempty"`
 	EnrollNonce string `json:"enroll_nonce,omitempty"`
+
+	// enroll_ack: sent as a second, separate request after "enroll"
+	// already got its response and the connection it arrived on
+	// closed. The CLI is the only side that knows whether the human
+	// typed the matching code and the key file actually got written -
+	// the daemon just relays that verdict on to the phone, which
+	// otherwise has no way to learn whether anything after its own
+	// enroll_response succeeded.
+	AckOK    bool   `json:"ack_ok,omitempty"`
+	AckError string `json:"ack_error,omitempty"`
 }
 
 // Response is one line the daemon sends back.
@@ -101,6 +111,10 @@ type Transport interface {
 	// SendEnroll forwards req to the phone and blocks for the new
 	// public key and its signature, or an error.
 	SendEnroll(ctx context.Context, req EnrollFields) (EnrollResult, error)
+	// SendEnrollResult tells the phone, best-effort, whether the
+	// enrollment that nonce identifies actually succeeded once the
+	// human typed the code - there is no answer to wait for.
+	SendEnrollResult(nonce string, ok bool, errMsg string) error
 }
 
 var (
@@ -173,6 +187,8 @@ func (d *Daemon) handle(ctx context.Context, conn net.Conn) {
 		d.handleApprove(ctx, conn, req)
 	case "enroll":
 		d.handleEnroll(ctx, conn, req)
+	case "enroll_ack":
+		d.handleEnrollAck(conn, req)
 	case "status":
 		d.handleStatus(conn)
 	default:
@@ -225,6 +241,13 @@ func (d *Daemon) handleEnroll(ctx context.Context, conn net.Conn, req Request) {
 		DeviceID: res.DeviceID, DeviceName: res.DeviceName,
 		EnrollSig: res.Signature,
 	})
+}
+
+func (d *Daemon) handleEnrollAck(conn net.Conn, req Request) {
+	if err := d.Transport.SendEnrollResult(req.EnrollNonce, req.AckOK, req.AckError); err != nil {
+		d.Logf("approved: could not tell the phone the enroll result for nonce %s: %v", req.EnrollNonce, err)
+	}
+	_ = ipc.WriteJSON(conn, Response{OK: true})
 }
 
 func (d *Daemon) handleStatus(conn net.Conn) {

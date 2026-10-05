@@ -238,3 +238,33 @@ func TestSendEnrollRoundTrip(t *testing.T) {
 		t.Fatalf("device info not carried from hello: %+v", res)
 	}
 }
+
+func TestSendEnrollResultReachesThePhone(t *testing.T) {
+	s, addr := startTestServer(t)
+	fp := dialFakePhone(t, addr, "dev1", "Test Phone")
+	defer fp.conn.Close()
+	waitUntilConnected(t, s)
+
+	if err := s.SendEnrollResult("n8", true, ""); err != nil {
+		t.Fatalf("SendEnrollResult: %v", err)
+	}
+	msg := fp.recv(t)
+	if msg.Type != "enroll_result" || msg.ID != "n8" || !msg.Approved || msg.Error != "" {
+		t.Fatalf("unexpected message: %+v", msg)
+	}
+}
+
+func TestSendEnrollResultCarriesFailure(t *testing.T) {
+	s, addr := startTestServer(t)
+	fp := dialFakePhone(t, addr, "dev1", "Test Phone")
+	defer fp.conn.Close()
+	waitUntilConnected(t, s)
+
+	if err := s.SendEnrollResult("n9", false, "the typed code did not match"); err != nil {
+		t.Fatalf("SendEnrollResult: %v", err)
+	}
+	msg := fp.recv(t)
+	if msg.Type != "enroll_result" || msg.ID != "n9" || msg.Approved || msg.Error != "the typed code did not match" {
+		t.Fatalf("unexpected message: %+v", msg)
+	}
+}

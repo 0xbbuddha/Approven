@@ -52,6 +52,7 @@ object ConnectionManager {
         fun onDisconnected() {}
         fun onApproveRequest(msg: WireMessage) {}
         fun onEnrollRequest(msg: WireMessage) {}
+        fun onEnrollResult(msg: WireMessage) {}
     }
 
     @Volatile private var socket: Socket? = null
@@ -183,6 +184,7 @@ object ConnectionManager {
         when (msg.type) {
             "approve_request" -> listener?.onApproveRequest(msg)
             "enroll_request" -> listener?.onEnrollRequest(msg)
+            "enroll_result" -> listener?.onEnrollResult(msg)
             "cancel" -> Unit // the Activity's own timeout handles this today; nothing more to do yet
             else -> Log.w(TAG, "unknown message type: ${msg.type}")
         }
