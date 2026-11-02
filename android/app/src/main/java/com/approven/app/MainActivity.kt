@@ -16,7 +16,17 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,14 +42,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
@@ -56,8 +66,24 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -179,6 +205,7 @@ class MainActivity : ComponentActivity() {
         var host by remember { mutableStateOf("") }
         var port by remember { mutableStateOf(PairingStore.DEFAULT_PORT.toString()) }
         var confirmForget by remember { mutableStateOf<PairingStore.Computer?>(null) }
+        var selected by remember { mutableStateOf<String?>(null) }
 
         fun stateOf(c: PairingStore.Computer) = states[c.id] ?: State.OFFLINE
         val ready = computers.filter { it.enrolled && stateOf(it) == State.CONNECTED }
@@ -199,11 +226,11 @@ class MainActivity : ComponentActivity() {
                 .fillMaxSize()
                 .safeDrawingPadding()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 16.dp),
+                .padding(vertical = 16.dp),
         ) {
-            Wordmark()
+            Box(Modifier.padding(horizontal = 20.dp)) { Wordmark() }
 
-            Column(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(
                     Modifier
                         .clip(CircleShape)
@@ -241,70 +268,77 @@ class MainActivity : ComponentActivity() {
             }
 
             if (fullScreenBlocked) {
-                Panel(Modifier.padding(bottom = 8.dp)) {
-                    Text("Let requests open on their own", color = Amber, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Android does not let Approven show a request full screen yet, so it only waits in your notifications.",
-                        color = Color.White, fontSize = 14.sp,
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    PrimaryButton("Allow full-screen alerts") {
-                        startActivity(Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:$packageName")))
-                    }
+                Row(
+                    Modifier
+                        .padding(horizontal = 20.dp)
+                        .fillMaxWidth()
+                        .background(Amber.copy(alpha = 0.08f))
+                        .drawBehind { drawRect(Amber, size = androidx.compose.ui.geometry.Size(3.dp.toPx(), size.height)) }
+                        .clickable { startActivity(Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:$packageName"))) }
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Requests can't pop up on their own yet", color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    Text("Allow →", color = Amber, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 }
             }
 
-            if (computers.isNotEmpty()) {
-                SectionLabel("Computers")
-                computers.forEach { c ->
-                    ComputerCard(c, stateOf(c), onForget = { confirmForget = c })
-                    Spacer(Modifier.height(12.dp))
+            Label("machines", "${ready.size}/${computers.size} online".takeIf { computers.isNotEmpty() })
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                items(computers, key = { it.id }) { c ->
+                    // Hostname match: what the daemon puts in a request is what enrollment named the computer.
+                    val last = history.firstOrNull { it.host == c.name && it.approved }?.service
+                    MachineCard(c, stateOf(c), last) { selected = c.id }
                 }
+                item { PairCard { scanQr() } }
             }
-
-            SectionLabel("Add a computer")
-            Panel {
-                Step(1, "On the computer, run", "sudo approve-cli enroll")
-                Step(2, "Scan the QR code it shows.")
-                Step(3, "Approve here with your fingerprint, then type the code this phone shows into the terminal.")
-                Spacer(Modifier.height(12.dp))
-                PrimaryButton("Scan QR code") { scanQr() }
-                Spacer(Modifier.height(10.dp))
-                AnimatedVisibility(adding) {
-                    Column {
-                        AddressFields(host, port, { host = it }, { port = it })
-                        Spacer(Modifier.height(10.dp))
-                        PrimaryButton("Connect") {
-                            val h = host.trim()
-                            if (h.isNotEmpty()) {
-                                addComputer(h, port.toIntOrNull() ?: PairingStore.DEFAULT_PORT, h, null)
-                                adding = false
-                                host = ""
-                            }
+            Text(
+                if (adding) "cancel" else "or type an address instead of scanning",
+                color = Muted,
+                fontSize = 13.sp,
+                textDecoration = TextDecoration.Underline,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp).clickable { adding = !adding },
+            )
+            AnimatedVisibility(adding) {
+                Column(Modifier.padding(horizontal = 20.dp)) {
+                    AddressFields(host, port, { host = it }, { port = it })
+                    Spacer(Modifier.height(10.dp))
+                    PrimaryButton("Connect") {
+                        val h = host.trim()
+                        if (h.isNotEmpty()) {
+                            addComputer(h, port.toIntOrNull() ?: PairingStore.DEFAULT_PORT, h, null)
+                            adding = false
+                            host = ""
                         }
-                        Spacer(Modifier.height(10.dp))
                     }
                 }
-                GhostButton(if (adding) "Cancel" else "Enter the address by hand") { adding = !adding }
             }
 
-            SectionLabel("Recent activity")
-            Panel {
+            val denied = history.count { !it.approved }
+            Label("activity", if (history.isEmpty()) null else "${history.size - denied} ✓  $denied ✕")
+            Column(Modifier.padding(horizontal = 20.dp)) {
+                DotMatrix(history)
+                Spacer(Modifier.height(16.dp))
                 if (history.isEmpty()) {
-                    Text("Nothing yet.", color = Color.White, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
-                    Text("Try it from a terminal:", color = Muted, fontSize = 14.sp)
-                    Spacer(Modifier.height(8.dp))
-                    Code("sudo -k && sudo true")
+                    Text(
+                        if (ready.isNotEmpty()) "nothing yet · tap the logo to try one" else "nothing yet",
+                        color = Muted, fontFamily = FontFamily.Monospace, fontSize = 13.sp,
+                    )
                 } else {
-                    history.forEachIndexed { i, e ->
-                        if (i > 0) Spacer(Modifier.height(14.dp))
-                        HistoryRow(e)
-                    }
+                    ActivityLog(history.take(4))
                 }
             }
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(32.dp))
+        }
+
+        computers.firstOrNull { it.id == selected }?.let { c ->
+            ComputerSheet(c, stateOf(c), ready = c in ready, onDismiss = { selected = null }, onForget = {
+                selected = null
+                confirmForget = c
+            })
         }
 
         confirmForget?.let { c ->
@@ -324,64 +358,262 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Actions for one computer, out of the way until its row is tapped:
+     * the list itself stays a calm column of names and states.
+     */
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun ComputerCard(c: PairingStore.Computer, state: State, onForget: () -> Unit) {
+    private fun ComputerSheet(c: PairingStore.Computer, state: State, ready: Boolean, onDismiss: () -> Unit, onForget: () -> Unit) {
         var editing by remember(c.id) { mutableStateOf(false) }
         var host by remember(c.id) { mutableStateOf(c.host) }
         var port by remember(c.id) { mutableStateOf(c.port.toString()) }
-        val (label, color) = when {
-            c.paused -> "Paused" to Muted
-            state == State.CONNECTED && c.enrolled -> "Connected" to Mint
-            state == State.CONNECTED -> "Not paired" to Amber
-            state == State.CONNECTING -> "Connecting" to Amber
-            else -> "Offline" to Muted
-        }
-        Panel {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(c.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Text("${c.host}:${c.port}", color = Muted, fontSize = 13.sp)
-                }
-                StatusChip(label, color)
-            }
-            Spacer(Modifier.height(8.dp))
-            if (c.enrolled) {
-                InfoRow("User", c.user.orEmpty())
-                InfoRow("Certificate", c.pin.orEmpty().take(16).chunked(4).joinToString(" "), mono = true)
-            } else {
-                Text("Not paired yet: run sudo approve-cli enroll on it.", color = Amber, fontSize = 14.sp)
-            }
-            AnimatedVisibility(editing) {
-                Column(Modifier.padding(top = 12.dp)) {
-                    AddressFields(host, port, { host = it }, { port = it })
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        ModalBottomSheet(
+            onDismissRequest = onDismiss,
+            containerColor = Card,
+            shape = RectangleShape,
+            dragHandle = { Box(Modifier.fillMaxWidth().height(1.dp).background(Mint.copy(alpha = 0.55f))) },
+        ) {
+            Column(Modifier.padding(horizontal = 24.dp).padding(top = 20.dp, bottom = 24.dp)) {
+                Text(c.name, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    listOfNotNull(c.user?.let { "$it@${c.host}:${c.port}" } ?: "${c.host}:${c.port}", c.pin?.take(16)?.chunked(4)?.joinToString(" ")).joinToString("\n"),
+                    color = Muted, fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 20.sp,
+                )
+                Spacer(Modifier.height(20.dp))
                 if (editing) {
-                    PrimaryButton("Save", Modifier.weight(1f)) {
+                    AddressFields(host, port, { host = it }, { port = it })
+                    Spacer(Modifier.height(12.dp))
+                    PrimaryButton("Save address") {
                         store.update(c.id) { it.copy(host = host.trim(), port = port.toIntOrNull() ?: it.port) }
                         editing = false
                         sync() // a new target takes over the old connection by itself
                     }
-                } else if (c.paused || state == State.OFFLINE) {
-                    PrimaryButton("Reconnect", Modifier.weight(1f)) {
-                        store.update(c.id) { it.copy(paused = false) }
-                        sync()
-                    }
                 } else {
-                    GhostButton("Disconnect", Modifier.weight(1f)) {
-                        store.update(c.id) { it.copy(paused = true) }
-                        sync()
+                    if (ready) SheetAction("test sudo", Mint) { ConnectionManager.requestTest(c.id); onDismiss() }
+                    if (c.paused || state == State.OFFLINE) {
+                        SheetAction("reconnect", Color.White) {
+                            store.update(c.id) { it.copy(paused = false) }
+                            sync()
+                            onDismiss()
+                        }
+                    } else {
+                        SheetAction("disconnect", Color.White) {
+                            store.update(c.id) { it.copy(paused = true) }
+                            sync()
+                            onDismiss()
+                        }
                     }
+                    SheetAction("edit address", Color.White) { editing = true }
+                    SheetAction("forget", Coral, onClick = onForget)
                 }
-                GhostButton(if (editing) "Cancel" else "Edit address", Modifier.weight(1f)) { editing = !editing }
-            }
-            TextButton(onClick = onForget, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-                Text("Forget this computer", color = Coral)
             }
         }
     }
+}
+
+/** A quiet mono label with a right-aligned summary, instead of a big section title. */
+@Composable
+private fun Label(title: String, summary: String?) {
+    Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 28.dp, bottom = 12.dp)) {
+        Text(title, color = Muted, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        if (summary != null) Text(summary, color = Muted, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+    }
+}
+
+private val MachineWidth = 248.dp
+private val MachineHeight = 168.dp
+private val MonoSmall = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+
+/**
+ * A terminal-UI window, the way btop or htop draw their panels: a
+ * hairline square frame with the title (and an optional tag) set into
+ * its top edge. The shape every panel on this screen uses.
+ */
+@Composable
+private fun TuiFrame(
+    title: String,
+    tag: String?,
+    color: Color,
+    modifier: Modifier = Modifier,
+    dashed: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val measurer = rememberTextMeasurer()
+    Column(
+        modifier
+            .drawWithContent {
+                drawContent()
+                val t = measurer.measure(" $title ", MonoSmall.copy(color = Color.White, fontWeight = FontWeight.Bold))
+                val g = tag?.let { measurer.measure(" $it ", MonoSmall.copy(color = color)) }
+                val y = t.size.height / 2f
+                val inset = 10.dp.toPx()
+                val stroke = 1.dp.toPx()
+                val effect = if (dashed) PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 5.dp.toPx())) else null
+                val line = color.copy(alpha = 0.55f)
+                fun seg(a: Offset, b: Offset) = drawLine(line, a, b, stroke, pathEffect = effect)
+                val left = stroke / 2
+                val right = size.width - stroke / 2
+                val bottom = size.height - stroke / 2
+                val tagStart = g?.let { right - inset - it.size.width } ?: right
+                seg(Offset(left, y), Offset(inset, y))
+                seg(Offset(inset + t.size.width, y), Offset(tagStart, y))
+                if (g != null) seg(Offset(tagStart + g.size.width, y), Offset(right, y))
+                seg(Offset(right, y), Offset(right, bottom))
+                seg(Offset(right, bottom), Offset(left, bottom))
+                seg(Offset(left, bottom), Offset(left, y))
+                drawText(t, topLeft = Offset(inset, 0f))
+                if (g != null) drawText(g, topLeft = Offset(tagStart, 0f))
+            }
+            .padding(start = 16.dp, end = 16.dp, top = 26.dp, bottom = 14.dp),
+        content = content,
+    )
+}
+
+/**
+ * A computer as its own little terminal: its prompt, the last command
+ * this phone approved there, and a cursor that blinks while it is online.
+ */
+@Composable
+private fun MachineCard(c: PairingStore.Computer, state: State, lastCommand: String?, onClick: () -> Unit) {
+    val (label, color) = when {
+        c.paused -> "paused" to Muted
+        state == State.CONNECTED && c.enrolled -> "online" to Mint
+        state == State.CONNECTED -> "pairing" to Amber
+        state == State.CONNECTING -> "searching" to Amber
+        else -> "offline" to Muted
+    }
+    val live = state == State.CONNECTED && !c.paused
+    TuiFrame(c.name, label, color, Modifier.width(MachineWidth).height(MachineHeight).clickable(onClick = onClick)) {
+        Text("${c.user ?: "?"}@${c.name}:~", color = color, fontFamily = FontFamily.Monospace, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.height(6.dp))
+        val line = when {
+            !c.enrolled && live -> "sudo approve-cli enroll"
+            live -> lastCommand.orEmpty()
+            else -> ""
+        }
+        Text(
+            buildAnnotatedString {
+                withStyle(SpanStyle(color = Muted)) { append("$ ") }
+                append(line)
+                if (live) withStyle(SpanStyle(color = color.copy(alpha = cursorAlpha()))) { append("█") }
+            },
+            color = Color.White, fontFamily = FontFamily.Monospace, fontSize = 14.sp, lineHeight = 20.sp, maxLines = 3, overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            if (live) "${c.host}:${c.port}" else if (c.paused) "# paused" else "# connection lost",
+            color = Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp, maxLines = 1,
+        )
+    }
+}
+
+/** A terminal cursor's blink: fully on, then off, no fade. */
+@Composable
+private fun cursorAlpha(): Float {
+    val t = rememberInfiniteTransition(label = "cursor")
+    val v by t.animateFloat(0f, 1f, infiniteRepeatable(tween(1000, easing = LinearEasing)), label = "blink")
+    return if (v < 0.5f) 1f else 0f
+}
+
+/** The empty slot at the end of the row, dashed, over the logo's ridges: where the next computer goes. */
+@Composable
+private fun PairCard(onClick: () -> Unit) {
+    TuiFrame(
+        "new",
+        "+",
+        Mint,
+        Modifier
+            .width(MachineWidth)
+            .height(MachineHeight)
+            .clipToBounds()
+            .drawBehind {
+                val center = Offset(size.width * 0.98f, size.height * 1.12f)
+                for (i in 1..8) {
+                    drawCircle(Mint.copy(alpha = 0.16f - i * 0.016f), radius = i * 20.dp.toPx(), center = center, style = Stroke(width = 5.dp.toPx()))
+                }
+            }
+            .clickable(onClick = onClick),
+        dashed = true,
+    ) {
+        Text(
+            buildAnnotatedString {
+                withStyle(SpanStyle(color = Muted)) { append("$ ") }
+                append("sudo approve-cli enroll")
+            },
+            color = Color.White, fontFamily = FontFamily.Monospace, fontSize = 13.sp,
+        )
+        Spacer(Modifier.weight(1f))
+        Text("> scan the code", color = Mint, fontFamily = FontFamily.Monospace, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+/**
+ * The recent decisions as a strip of pixels - mint approved, coral
+ * denied, newest on the left, empty slots dim - so a denial stands out
+ * before reading a single line.
+ */
+@Composable
+private fun DotMatrix(history: List<PairingStore.Event>) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        repeat(PairingStore.HISTORY_SIZE) { i ->
+            val e = history.getOrNull(i)
+            Box(
+                Modifier.size(9.dp).background(
+                    when {
+                        e == null -> CardHigh
+                        e.approved -> Mint
+                        else -> Coral
+                    },
+                ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SheetAction(text: String, color: Color, onClick: () -> Unit) {
+    Text(
+        "> $text",
+        color = color,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 16.sp,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 13.dp),
+    )
+}
+
+/** Approvals as a terminal-style log, grouped by day. */
+@Composable
+private fun ActivityLog(history: List<PairingStore.Event>) {
+    val timeFormat = remember { java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT) }
+    history.groupBy { dayLabel(it.time) }.forEach { (day, events) ->
+        Text(day, color = Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
+        events.forEach { e ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.width(3.dp).height(18.dp).background(if (e.approved) Mint else Coral))
+                Spacer(Modifier.width(12.dp))
+                Text(timeFormat.format(java.util.Date(e.time)), color = Muted, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    e.service.ifEmpty { "sudo" },
+                    color = if (e.approved) Color.White else Muted,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 14.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(e.host, color = Muted, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+private fun dayLabel(time: Long): String = when {
+    DateUtils.isToday(time) -> "today"
+    DateUtils.isToday(time + DateUtils.DAY_IN_MILLIS) -> "yesterday"
+    else -> java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(time)).lowercase()
 }
 
 /** The "tap the logo" test: a hint, then what the computer's `sudo true` came back with. */
@@ -397,23 +629,6 @@ private fun TestStatus(test: ConnectionManager.Test) {
 }
 
 @Composable
-private fun StatusChip(label: String, color: Color) {
-    Row(
-        Modifier.clip(CircleShape).background(color.copy(alpha = 0.12f)).padding(horizontal = 14.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(8.dp).clip(CircleShape).background(color))
-        Spacer(Modifier.width(8.dp))
-        Text(
-            label,
-            color = color,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-    }
-}
-
-@Composable
 private fun AddressFields(host: String, port: String, onHost: (String) -> Unit, onPort: (String) -> Unit) {
     val colors = OutlinedTextFieldDefaults.colors(
         focusedBorderColor = Mint,
@@ -426,7 +641,7 @@ private fun AddressFields(host: String, port: String, onHost: (String) -> Unit, 
             host, onHost, Modifier.weight(1f),
             label = { Text("Computer IP") },
             singleLine = true,
-            shape = RoundedCornerShape(16.dp),
+            shape = RectangleShape,
             colors = colors,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
         )
@@ -434,7 +649,7 @@ private fun AddressFields(host: String, port: String, onHost: (String) -> Unit, 
             port, { v -> onPort(v.filter { it.isDigit() }.take(5)) }, Modifier.width(96.dp),
             label = { Text("Port") },
             singleLine = true,
-            shape = RoundedCornerShape(16.dp),
+            shape = RectangleShape,
             colors = colors,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         )
@@ -445,7 +660,7 @@ private fun AddressFields(host: String, port: String, onHost: (String) -> Unit, 
 fun PrimaryButton(text: String, modifier: Modifier = Modifier.fillMaxWidth(), onClick: () -> Unit) {
     Button(
         onClick, modifier.height(52.dp),
-        shape = RoundedCornerShape(16.dp),
+        shape = RectangleShape,
         colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = Ink),
     ) { Text(text, fontWeight = FontWeight.Bold, fontSize = 16.sp) }
 }
@@ -454,7 +669,7 @@ fun PrimaryButton(text: String, modifier: Modifier = Modifier.fillMaxWidth(), on
 fun GhostButton(text: String, modifier: Modifier = Modifier.fillMaxWidth(), onClick: () -> Unit) {
     OutlinedButton(
         onClick, modifier.height(52.dp),
-        shape = RoundedCornerShape(16.dp),
+        shape = RectangleShape,
         border = androidx.compose.foundation.BorderStroke(1.dp, CardHigh),
         colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
     ) { Text(text, fontWeight = FontWeight.SemiBold) }
@@ -474,52 +689,3 @@ fun InfoRow(label: String, value: String, mono: Boolean = false) {
     }
 }
 
-@Composable
-private fun Code(text: String) {
-    Text(
-        "$ $text",
-        color = Mint,
-        fontFamily = FontFamily.Monospace,
-        fontSize = 14.sp,
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Ink).padding(12.dp),
-    )
-}
-
-@Composable
-private fun Step(n: Int, text: String, code: String? = null) {
-    Row(Modifier.padding(vertical = 6.dp)) {
-        Box(Modifier.size(26.dp).clip(CircleShape).background(Mint.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
-            Text("$n", color = Mint, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.padding(top = 3.dp)) {
-            Text(text, color = Color.White, fontSize = 14.sp)
-            if (code != null) {
-                Spacer(Modifier.height(6.dp))
-                Code(code)
-            }
-        }
-    }
-}
-
-@Composable
-private fun HistoryRow(e: PairingStore.Event) {
-    val c = if (e.approved) Mint else Coral
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(36.dp).clip(CircleShape).background(c.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
-            Icon(if (e.approved) Icons.Filled.Check else Icons.Filled.Close, null, tint = c, modifier = Modifier.size(20.dp))
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                "${e.service.ifEmpty { "sudo" }} · ${e.user}",
-                color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp,
-            )
-            Text(e.host, color = Muted, fontSize = 13.sp)
-        }
-        Text(
-            DateUtils.getRelativeTimeSpanString(e.time, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS).toString(),
-            color = Muted, fontSize = 12.sp,
-        )
-    }
-}

@@ -134,15 +134,3 @@ fun Panel(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> 
         content = content,
     )
 }
-
-@Composable
-fun SectionLabel(text: String) {
-    Text(
-        text.uppercase(),
-        color = Muted,
-        fontSize = 12.sp,
-        fontWeight = FontWeight.SemiBold,
-        letterSpacing = 1.5.sp,
-        modifier = Modifier.padding(start = 4.dp, bottom = 8.dp, top = 8.dp),
-    )
-}
