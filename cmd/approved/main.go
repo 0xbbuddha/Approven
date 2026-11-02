@@ -16,16 +16,13 @@ import (
 	"os/user"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"approven/internal/daemon"
 	"approven/internal/ipc"
 	"approven/internal/keyfile"
 	"approven/internal/phonetransport"
 )
-
-// DefaultPort is the TCP port the daemon listens on for phones. Not yet
-// configurable - the first thing to add when that turns out to matter.
-const DefaultPort = 17165
 
 func main() {
 	uid := os.Getuid()
@@ -41,11 +38,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("approved: %v", err)
 	}
-	if fp, err := phonetransport.Fingerprint(cert); err == nil {
-		log.Printf("approved: certificate fingerprint %s", fp)
+	fp, err := phonetransport.Fingerprint(cert)
+	if err != nil {
+		log.Fatalf("approved: %v", err)
 	}
+	log.Printf("approved: certificate fingerprint %s", fp)
 
-	tcpAddr := fmt.Sprintf(":%d", DefaultPort)
+	tcpAddr := fmt.Sprintf(":%d", phonetransport.DefaultPort)
 	tl, err := net.Listen("tcp", tcpAddr)
 	if err != nil {
 		log.Fatalf("approved: listen %s: %v", tcpAddr, err)
@@ -78,15 +77,43 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	go advertise(ctx, fp)
 	go func() {
 		if err := transport.Serve(ctx, tl); err != nil {
 			log.Printf("approved: phone listener: %v", err)
 		}
 	}()
 
-	log.Printf("approved: phones connect on port %d, local clients on %s", DefaultPort, ipc.SocketPath(uid))
+	log.Printf("approved: phones connect on port %d, local clients on %s", phonetransport.DefaultPort, ipc.SocketPath(uid))
 	if err := d.Serve(ctx, l); err != nil {
 		log.Fatalf("approved: %v", err)
+	}
+}
+
+// advertise announces this daemon on the local network over mDNS
+// (_approven._tcp, through avahi), so a paired phone whose saved address
+// went stale - DHCP handed this computer a new one - can find it again.
+// The TXT record carries the certificate fingerprint: the phone looks
+// for the fingerprint it pinned, never trusts a name, and the TLS pin
+// still decides on connect. Best-effort: without avahi the phone just
+// keeps its saved address.
+func advertise(ctx context.Context, fp string) {
+	name, err := os.Hostname()
+	if err != nil {
+		name = "approven"
+	}
+	for ctx.Err() == nil {
+		cmd := exec.CommandContext(ctx, "avahi-publish", "-s", name, "_approven._tcp",
+			fmt.Sprint(phonetransport.DefaultPort), "fp="+fp)
+		// Dies with this daemon even on a crash, never left announcing a dead port.
+		cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM}
+		if err := cmd.Run(); err != nil && ctx.Err() == nil {
+			log.Printf("approved: mDNS announcement stopped (%v); retrying in 30s", err)
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(30 * time.Second):
+		}
 	}
 }
 

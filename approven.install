@@ -4,9 +4,13 @@ post_install() {
     echo "   1. Add this as the FIRST auth line in /etc/pam.d/sudo:"
     echo "        $(cat usr/share/doc/approven/pam-line.txt)"
     echo ""
+    echo "      Optional, for graphical polkit prompts: the same line first in"
+    echo "      /etc/pam.d/polkit-1 (copy /usr/lib/pam.d/polkit-1 there first), and"
+    echo "      the polkit-agent-helper sandbox override described in the README."
+    echo ""
     echo "   2. As your normal user: systemctl --user enable --now approved.service"
     echo ""
-    echo "   3. Install the phone app, pair it, then: sudo approve-cli enroll"
+    echo "   3. sudo approve-cli enroll, then scan the QR code with the phone app"
     echo ""
     echo "   See /usr/share/doc/approven/README.md for details."
 }
@@ -16,6 +20,6 @@ post_upgrade() {
 }
 
 pre_remove() {
-    echo ":: If you added the pam_exec line to /etc/pam.d/sudo, remove it by hand."
+    echo ":: If you added the pam_exec line to /etc/pam.d/sudo (or polkit-1), remove it by hand."
     echo ":: Enrolled keys remain in /etc/approven - remove with: rm -rf /etc/approven"
 }

@@ -27,7 +27,10 @@ type signingTransport struct {
 	gotRequest daemon.ApproveFields
 }
 
-func (s *signingTransport) Connected() bool   { return true }
+func (s *signingTransport) Connected() bool { return true }
+func (s *signingTransport) ServerCert() string {
+	return "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+}
 func (s *signingTransport) PhoneName() string { return "Test Phone" }
 
 func (s *signingTransport) SendApprove(ctx context.Context, req daemon.ApproveFields) ([]byte, error) {

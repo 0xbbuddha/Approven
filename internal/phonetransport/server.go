@@ -53,6 +53,10 @@ type wireMsg struct {
 	Error string `json:"error,omitempty"`
 }
 
+// DefaultPort is the TCP port the daemon listens on for phones, and the
+// one the enrollment QR code tells the phone to dial.
+const DefaultPort = 17165
+
 // maxLine caps one wire message; the biggest legitimate one (an
 // enroll_response with a DER key and a signature) is well under 2 KiB.
 const maxLine = 64 * 1024
@@ -275,6 +279,9 @@ func (s *Server) Connected() bool {
 	defer s.mu.Unlock()
 	return s.conn != nil
 }
+
+// ServerCert implements daemon.Transport.
+func (s *Server) ServerCert() string { return s.serverCert }
 
 // PhoneName is the name of the connected phone, from its hello, or ""
 // when none is connected.

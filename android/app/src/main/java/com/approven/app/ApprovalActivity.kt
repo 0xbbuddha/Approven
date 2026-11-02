@@ -81,6 +81,10 @@ class ApprovalActivity : FragmentActivity() {
     private enum class Kind { APPROVE, ENROLL }
 
     private var kind by mutableStateOf(Kind.APPROVE)
+    /** Which computer ([PairingStore.Computer.id]) sent the request: the answer goes back to it. */
+    private var computer by mutableStateOf("")
+    /** Whether this enrollment generated the approval key (rather than reusing the one other computers trust). */
+    private var newKey = false
     private var id by mutableStateOf("")
     private var host by mutableStateOf("")
     private var user by mutableStateOf("")
@@ -124,6 +128,7 @@ class ApprovalActivity : FragmentActivity() {
     }
 
     private fun applyIntent(i: Intent) {
+        computer = i.getStringExtra("computer") ?: ""
         if (i.getStringExtra("kind") == "enroll_result") {
             // A reply to the enrollment this screen already showed a
             // code for, not a new request - leave the request fields
@@ -171,11 +176,11 @@ class ApprovalActivity : FragmentActivity() {
     private fun expire() {
         if (phase != Phase.ASK && phase != Phase.WAITING) return
         // Only WAITING has generated a new key; in ASK the old, still enrolled one must stay.
-        val newKeyMade = kind == Kind.ENROLL && phase == Phase.WAITING
+        val keyInFlight = kind == Kind.ENROLL && phase == Phase.WAITING
         phase = Phase.EXPIRED
         message = "The computer stopped waiting. Run the command again."
         prompt?.cancelAuthentication()
-        if (newKeyMade) CryptoKeys.deleteKey()
+        if (keyInFlight) dropNewKey()
     }
 
     /**
@@ -187,7 +192,7 @@ class ApprovalActivity : FragmentActivity() {
      */
     private fun sendInBackground(msg: WireMessage, onDone: (Boolean) -> Unit) {
         Thread {
-            val ok = ConnectionManager.send(msg)
+            val ok = ConnectionManager.send(computer, msg)
             runOnUiThread { onDone(ok) }
         }.start()
     }
@@ -241,7 +246,9 @@ class ApprovalActivity : FragmentActivity() {
     }
 
     private fun doEnroll(id: String, host: String, user: String, time: Long, nonce: String) {
-        val pub = try {
+        val reused = CryptoKeys.usableKey()
+        newKey = reused == null
+        val pub = reused ?: try {
             CryptoKeys.generateKey()
         } catch (e: Exception) {
             fail("Could not create a key: ${e.message}")
@@ -252,13 +259,13 @@ class ApprovalActivity : FragmentActivity() {
         // phone saw them: the computer compares them with its own view,
         // so a man in the middle makes the enrollment fail instead of
         // leaving this phone pinned to the impostor.
-        val serverCert = ConnectionManager.lastServerFingerprint
+        val serverCert = ConnectionManager.serverFingerprint(computer)
         val message = try {
             ApproveMessage.bytesOf(
                 ApproveMessage.EnrollRequest(host, user, keyHash, CryptoKeys.tlsCertHash(), serverCert ?: "", time, nonce),
             )
         } catch (e: Exception) {
-            CryptoKeys.deleteKey()
+            dropNewKey()
             fail("Could not build the enrollment: ${e.message}")
             return
         }
@@ -277,21 +284,21 @@ class ApprovalActivity : FragmentActivity() {
                         WireMessage(type = "enroll_response", id = id, publicKeyDer = pub.encoded, signature = bytes),
                     ) { ok ->
                         if (!ok) {
-                            CryptoKeys.deleteKey()
+                            dropNewKey()
                             fail("Lost the connection to the computer before the key could be sent. Try again.")
                         } else {
                             code = KeyCode.keyCode(pub)
-                            val store = PairingStore(this@ApprovalActivity)
-                            store.pinnedFingerprint = serverCert
-                            store.enrolledUser = user
+                            PairingStore(this@ApprovalActivity).update(computer) {
+                                it.copy(pin = serverCert, user = user, name = host)
+                            }
                             phase = Phase.CODE
                         }
                     }
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    if (phase == Phase.EXPIRED) return // our own cancelAuthentication(); key already gone
-                    CryptoKeys.deleteKey()
+                    if (phase == Phase.EXPIRED) return // our own cancelAuthentication(); key already handled
+                    dropNewKey()
                     fail("Enrollment cancelled.")
                 }
             },
@@ -302,6 +309,11 @@ class ApprovalActivity : FragmentActivity() {
             .setNegativeButtonText("Cancel")
             .build()
         prompt?.authenticate(info, BiometricPrompt.CryptoObject(signature))
+    }
+
+    /** An abandoned enrollment removes the key only if it made it: a reused one is still what other computers trust. */
+    private fun dropNewKey() {
+        if (newKey) CryptoKeys.deleteKey()
     }
 
     private fun fail(msg: String) {
@@ -373,7 +385,7 @@ class ApprovalActivity : FragmentActivity() {
                     Spacer(Modifier.height(16.dp))
                     Text(
                         when (p) {
-                            Phase.ASK, Phase.WAITING -> if (kind == Kind.APPROVE) "Allow sudo?" else "Pair this phone?"
+                            Phase.ASK, Phase.WAITING -> if (kind == Kind.ENROLL) "Pair this phone?" else if (service == "sudo") "Allow sudo?" else "Allow admin access?"
                             Phase.CODE -> "Almost there"
                             Phase.DONE -> "All set!"
                             Phase.ERROR -> "Hmm, that didn't work"

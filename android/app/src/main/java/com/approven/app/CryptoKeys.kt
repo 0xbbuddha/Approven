@@ -34,6 +34,19 @@ object CryptoKeys {
         return ks.getCertificate(ALIAS)?.publicKey
     }
 
+    /**
+     * The existing approval key, when it can still sign - adding a
+     * fingerprint permanently invalidates it - or null. Enrolling another
+     * computer reuses it, so pairing a second computer does not break the
+     * first one.
+     */
+    fun usableKey(): PublicKey? = try {
+        newSignatureForSigning()
+        publicKey()
+    } catch (_: Exception) {
+        null
+    }
+
     fun deleteKey() {
         val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
         if (ks.containsAlias(ALIAS)) ks.deleteEntry(ALIAS)

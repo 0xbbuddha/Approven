@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"net/url"
 	"os"
 	"os/user"
 	"strconv"
@@ -56,7 +57,10 @@ type enrollTransport struct {
 	gotAckError string
 }
 
-func (e *enrollTransport) Connected() bool   { return true }
+func (e *enrollTransport) Connected() bool { return true }
+func (e *enrollTransport) ServerCert() string {
+	return "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+}
 func (e *enrollTransport) PhoneName() string { return e.name }
 
 func (e *enrollTransport) SendApprove(ctx context.Context, req daemon.ApproveFields) ([]byte, error) {
@@ -308,5 +312,18 @@ func TestRunEnrollSendsFailureAckWhenCodeDoesNotMatch(t *testing.T) {
 	}
 	if !tr.gotAck || tr.gotAckOK {
 		t.Fatalf("the phone was not told enrollment failed: gotAck=%v ok=%v", tr.gotAck, tr.gotAckOK)
+	}
+}
+
+func TestPairingURIRoundTrips(t *testing.T) {
+	fp := strings.Repeat("e5", 32)
+	u, err := url.Parse(pairingURI("10.0.0.7", 17165, fp, "my host"))
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	q := u.Query()
+	if u.Scheme != "approven" || u.Host != "pair" || q.Get("h") != "10.0.0.7" ||
+		q.Get("p") != "17165" || q.Get("fp") != fp || q.Get("n") != "my host" {
+		t.Fatalf("unexpected URI %q", u)
 	}
 }

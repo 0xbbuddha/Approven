@@ -13,12 +13,19 @@ if [[ -z "${SUDO_USER:-}" ]]; then
     exit 1
 fi
 
-PAM_FILE=/etc/pam.d/sudo
-if grep -qF "approve-helper" "$PAM_FILE" 2>/dev/null; then
-    cp -a "$PAM_FILE" "$PAM_FILE.bak-uninstall-$(date +%Y%m%d-%H%M%S)"
-    grep -vF "approve-helper" "$PAM_FILE" > "$PAM_FILE.new"
-    mv "$PAM_FILE.new" "$PAM_FILE"
-    echo "Removed the PAM line from $PAM_FILE."
+for PAM_FILE in /etc/pam.d/sudo /etc/pam.d/polkit-1; do
+    if grep -qF "approve-helper" "$PAM_FILE" 2>/dev/null; then
+        cp -a "$PAM_FILE" "$PAM_FILE.bak-uninstall-$(date +%Y%m%d-%H%M%S)"
+        grep -vF "approve-helper" "$PAM_FILE" > "$PAM_FILE.new"
+        mv "$PAM_FILE.new" "$PAM_FILE"
+        echo "Removed the PAM line from $PAM_FILE."
+    fi
+done
+if [[ -f /etc/systemd/system/polkit-agent-helper@.service.d/approven.conf ]]; then
+    rm -f /etc/systemd/system/polkit-agent-helper@.service.d/approven.conf
+    rmdir /etc/systemd/system/polkit-agent-helper@.service.d 2>/dev/null || true
+    systemctl daemon-reload
+    echo "Removed the polkit helper sandbox override."
 fi
 
 SUDO_UID=$(id -u "$SUDO_USER")

@@ -96,7 +96,13 @@ func run() int {
 		return 1
 	}
 	reqTime := time.Now().Unix()
-	command := parentCommand()
+	// Only sudo's own command line means anything: under polkit the
+	// parent is polkit-agent-helper-1, whose arguments say nothing about
+	// what is being authorized; the phone shows the service instead.
+	command := ""
+	if pamService == "sudo" {
+		command = parentCommand()
+	}
 
 	approveReq := protocol.ApproveRequest{
 		Host: host, User: pamUser, Service: pamService, Command: command,

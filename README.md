@@ -4,7 +4,8 @@
 
 # Approven
 
-Approve `sudo` with your phone's fingerprint. An EC P-256 key lives in
+Approve `sudo` (and polkit prompts) with your phone's fingerprint, on
+one computer or several. An EC P-256 key lives in
 the Android Keystore and only signs after a biometric check; a
 root-owned trust-anchor file on the computer holds its public half; a
 PAM helper verifies a signature it rebuilds itself from its own PAM
@@ -23,6 +24,7 @@ cmd/approve-helper/     the PAM-invoked binary (root) - verifies, never trusts
 cmd/approve-cli/        enroll / status / remove
 dist/                   systemd service, PAM line, install.sh / uninstall.sh
 android/                the phone app (Kotlin, Jetpack Compose)
+docs/                   the logo
 ```
 
 Every package under `internal/` and every `cmd/` has tests; run
@@ -55,9 +57,14 @@ go build ./...   # sanity check
 sudo ./dist/install.sh
 ```
 
-This builds the 3 binaries, installs them to `/usr/local/bin`, adds one
-line to `/etc/pam.d/sudo`, and enables `approved` as your systemd user
-service. It backs up `/etc/pam.d/sudo` before touching it.
+This builds the 3 binaries, installs them to `/usr/local/bin`, adds the
+PAM line to `/etc/pam.d/sudo` and `/etc/pam.d/polkit-1` (backing each
+up first), sets up the polkit sandbox drop-in described under
+[polkit](#polkit), and enables `approved` as your systemd user service.
+
+Optional, and each degrades gracefully when missing: `qrencode` (the
+pairing QR code), `avahi` (finding the computer after its IP changes),
+`libnotify` (the desktop notification for the app's test button).
 
 Then, on the phone, install the APK from the latest release (or build
 your own: `cd android && ./gradlew assembleDebug`) and open it.
@@ -70,19 +77,51 @@ comes out unsigned.
 
 ### Pairing
 
-1. On the phone, enter the computer's LAN IP and port `17165`, tap
-   Connect. The app says "Not paired yet" until the next steps are done.
-2. On the computer: `sudo approve-cli enroll`.
-3. The phone shows a request; approving it asks for a fingerprint, then
-   shows a 16-character code.
+1. On the computer: `sudo approve-cli enroll`. With no phone connected
+   yet, it shows a QR code (needs `qrencode`; otherwise it prints the
+   same `approven://pair?...` link) and waits.
+2. In the app: **Scan QR code**. The code carries the computer's address
+   and its certificate fingerprint, so the phone trusts that exact
+   computer before it even connects. **Enter the address by hand**
+   (LAN IP, port `17165`) works too, trusting the first certificate it
+   sees instead.
+3. The phone shows a pairing request; approving it asks for a
+   fingerprint, then shows a 16-character code.
 4. Type that code into the terminal running `enroll`.
-5. Test: tap the logo in the app, or run `sudo -k && sudo true` - either
-   way the phone asks instead of a password.
+5. Test: tap the logo in the app, or run `sudo -k && sudo true`.
 
-On Android 14+, also allow **full-screen alerts** for Approven
-(Settings → Apps → Approven → Notifications). Without it a request
-only lands in the notification shade instead of opening the approval
-screen on its own.
+On Android 14+, a request only opens on its own with **full-screen
+alerts** allowed for Approven; until then the home screen shows a card
+that opens that setting. While the app is on screen, requests open
+directly either way.
+
+### Several computers
+
+One phone can approve for several computers: run the pairing steps on
+each. They share the phone's approval key, and each computer keeps its
+own copy of the public half, so forgetting one leaves the others
+working. Each computer has its own card on the home screen (status,
+disconnect, edit address, forget).
+
+### When the computer's address changes
+
+The daemon announces itself on the local network over mDNS
+(`_approven._tcp`, through `avahi-publish`, with its certificate
+fingerprint in the TXT record). When a paired computer stops
+answering at its saved address, the phone looks for that fingerprint
+on the network and moves to the new address on its own. Without avahi
+on the computer, edit the address in the app instead.
+
+### polkit
+
+`install.sh` also adds the PAM line to `/etc/pam.d/polkit-1`, so the
+graphical "authentication required" prompts go through the phone too
+(the phone then shows "Allow admin access?" and the `polkit-1`
+service instead of a command). polkit 124+ runs its PAM stack in a
+sandboxed unit that hides `/run/user`; `install.sh` adds a drop-in,
+`/etc/systemd/system/polkit-agent-helper@.service.d/approven.conf`,
+that keeps home directories hidden but exposes the daemon's socket
+directory, read-only. `uninstall.sh` removes both.
 
 ## Using it
 
@@ -132,6 +171,9 @@ phone's side.
 - **The key never leaves the phone.** It lives in the Android Keystore
   (StrongBox when available), signs only after a strong-biometric
   check, every time, and is destroyed if a new fingerprint is added.
+- **Pairing by QR code pins the computer up front.** The phone checks
+  the computer's certificate against the fingerprint from the code on
+  its very first connection.
 - **Only the enrolled phone gets requests.** The phone authenticates
   with a TLS client certificate from a second Keystore key; enrollment
   pins it in the key file. Another device on the network can neither
@@ -154,8 +196,8 @@ again.
 sudo ./dist/uninstall.sh
 ```
 
-Removes the PAM line (with a backup), stops the service, removes the
-binaries. Leaves `/etc/approven` - remove by hand if you want the
+Removes the PAM lines from `sudo` and `polkit-1` (with backups) and the
+polkit drop-in, stops the service, removes the binaries. Leaves `/etc/approven` - remove by hand if you want the
 enrolled key gone too.
 
 ## What's verified and what isn't
@@ -166,23 +208,25 @@ real signature verifying and a tampered one being refused.
 
 The full phone-to-computer path (mutual-TLS pairing, biometric
 signing, a full-screen approval prompt reaching the lock screen, the
-logo's test sudo) has been exercised end to end on a real device, including the failure modes
-that only show up there: a background service that cannot start an
+logo's test sudo, a polkit prompt through `pkexec`) has been exercised
+end to end on a real device, including the failure modes that only
+show up there: a background service that cannot start an
 Activity without a full-screen-intent notification, a notification
 permission that has to be requested at runtime on Android 13+, writing
 to a socket from a BiometricPrompt callback (the main thread, which
 Android forbids for any network I/O), and a `singleInstance` Activity
 that needs `onNewIntent` to actually refresh for a second request.
+Pairing by QR code, several computers and mDNS rediscovery are covered
+by unit tests (`PairingUriTest`, the Go transport and CLI tests); on
+the device, only the upgrade of an existing pairing to the
+several-computers format has been checked so far.
 
 ## Not built yet
 
 - A way to change the port or the wait timeout without editing source.
-- `polkit` and lock-screen approval - this project only targets `sudo`
-  so far.
+- Lock-screen (display manager) approval - only `sudo` and polkit.
 - iOS/macOS apps - only Android exists here.
 - Automatic reconnect with backoff beyond a fixed 5-second retry.
-- Asking for the full-screen alert permission from inside the app
-  (Android 14+ does not grant it by default).
 - Starting the Android app automatically after a phone reboot (it does
   reconnect on its own after the computer comes back up, as long as
   the app itself is still running).

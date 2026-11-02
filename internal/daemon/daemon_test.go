@@ -31,7 +31,10 @@ type fakeTransport struct {
 	gotAckError string
 }
 
-func (f *fakeTransport) Connected() bool   { return f.connected }
+func (f *fakeTransport) Connected() bool { return f.connected }
+func (f *fakeTransport) ServerCert() string {
+	return "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+}
 func (f *fakeTransport) PhoneName() string { return f.name }
 
 func (f *fakeTransport) SendApprove(ctx context.Context, req ApproveFields) ([]byte, error) {

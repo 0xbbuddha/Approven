@@ -110,6 +110,9 @@ type Transport interface {
 	Connected() bool
 	// PhoneName is the name of the connected phone, or "" when none is.
 	PhoneName() string
+	// ServerCert is the SHA-256 hex of this daemon's TLS certificate -
+	// what the enrollment QR code tells the phone to pin.
+	ServerCert() string
 	// SendApprove forwards req to the phone and blocks for its answer,
 	// a denial, ctx's deadline, or a disconnect - whichever comes
 	// first. A denial and a timeout are both reported as errApprove*
@@ -264,5 +267,6 @@ func (d *Daemon) handleEnrollAck(conn net.Conn, req Request) {
 func (d *Daemon) handleStatus(conn net.Conn) {
 	_ = ipc.WriteJSON(conn, Response{
 		OK: true, PhoneConnected: d.Transport.Connected(), PhoneName: d.Transport.PhoneName(),
+		ServerCert: d.Transport.ServerCert(),
 	})
 }

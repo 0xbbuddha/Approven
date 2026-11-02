@@ -11,7 +11,10 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
+	"os/exec"
 	"os/user"
 	"strconv"
 	"strings"
@@ -20,6 +23,7 @@ import (
 	"approven/internal/daemon"
 	"approven/internal/ipc"
 	"approven/internal/keyfile"
+	"approven/internal/phonetransport"
 	"approven/internal/protocol"
 )
 
@@ -76,25 +80,33 @@ func targetUser() (name string, uid int, err error) {
 	return name, uid, err
 }
 
+func daemonStatus(name string, uid int) (daemon.Response, error) {
+	conn, err := ipc.Dial(uid)
+	if err != nil {
+		return daemon.Response{}, fmt.Errorf("the approven daemon is not running for %s: %w", name, err)
+	}
+	defer conn.Close()
+	if err := ipc.WriteJSON(conn, daemon.Request{Cmd: "status"}); err != nil {
+		return daemon.Response{}, err
+	}
+	var resp daemon.Response
+	if err := ipc.NewLineReader(conn).ReadJSON(&resp); err != nil {
+		return daemon.Response{}, err
+	}
+	if !resp.OK {
+		return daemon.Response{}, fmt.Errorf("%s", resp.Error)
+	}
+	return resp, nil
+}
+
 func runStatus() error {
 	name, uid, err := targetUser()
 	if err != nil {
 		return err
 	}
-	conn, err := ipc.Dial(uid)
+	resp, err := daemonStatus(name, uid)
 	if err != nil {
-		return fmt.Errorf("the approven daemon is not running for %s: %w", name, err)
-	}
-	defer conn.Close()
-	if err := ipc.WriteJSON(conn, daemon.Request{Cmd: "status"}); err != nil {
 		return err
-	}
-	var resp daemon.Response
-	if err := ipc.NewLineReader(conn).ReadJSON(&resp); err != nil {
-		return err
-	}
-	if !resp.OK {
-		return fmt.Errorf("%s", resp.Error)
 	}
 	if resp.PhoneConnected {
 		fmt.Printf("Phone connected: %s\n", protocol.Clean(resp.PhoneName))
@@ -133,16 +145,20 @@ func runEnroll() error {
 		return err
 	}
 
+	host, err := os.Hostname()
+	if err != nil {
+		return err
+	}
+	if err := waitForPhone(name, uid, host); err != nil {
+		return err
+	}
+
 	conn, err := ipc.Dial(uid)
 	if err != nil {
 		return fmt.Errorf("the approven daemon is not running for %s: %w", name, err)
 	}
 	defer conn.Close()
 
-	host, err := os.Hostname()
-	if err != nil {
-		return err
-	}
 	nonce, err := protocol.NewNonce()
 	if err != nil {
 		return err
@@ -155,7 +171,7 @@ func runEnroll() error {
 		return err
 	}
 
-	fmt.Printf("Open the app on the phone and select Enroll for %s on %s.\n", name, host)
+	fmt.Printf("Approve the pairing request on the phone (%s on %s).\n", name, host)
 
 	var resp daemon.Response
 	if err := ipc.NewLineReader(conn).ReadJSON(&resp); err != nil {
@@ -224,6 +240,67 @@ func runEnroll() error {
 	sendEnrollAck(uid, nonce, true, "")
 	fmt.Printf("Enrolled %s for sudo approval on %s.\n", protocol.Clean(resp.DeviceName), host)
 	return nil
+}
+
+// enrollWait is how long enroll waits for a phone to connect.
+const enrollWait = 2 * time.Minute
+
+// waitForPhone shows a pairing QR code and waits until a phone is
+// connected to the daemon. The code carries the daemon's certificate
+// fingerprint, so a phone that scans it pins the right computer before
+// it ever connects - nothing on the network can stand in for it, not
+// even on that very first connection.
+func waitForPhone(name string, uid int, host string) error {
+	st, err := daemonStatus(name, uid)
+	if err != nil {
+		return err
+	}
+	if st.PhoneConnected {
+		return nil
+	}
+	ip := lanIP()
+	fmt.Println("Scan this code in the Approven app (Add a computer → Scan QR code):")
+	showQR(pairingURI(ip, phonetransport.DefaultPort, st.ServerCert, host))
+	fmt.Printf("Or enter %s, port %d, by hand. Waiting for the phone...\n", ip, phonetransport.DefaultPort)
+	for deadline := time.Now().Add(enrollWait); !st.PhoneConnected; {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("no phone connected within %s", enrollWait)
+		}
+		time.Sleep(time.Second)
+		if st, err = daemonStatus(name, uid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pairingURI is what the QR code holds: where to connect, and which
+// certificate to expect there.
+func pairingURI(ip string, port int, serverCert, host string) string {
+	q := url.Values{"h": {ip}, "p": {strconv.Itoa(port)}, "fp": {serverCert}, "n": {host}}
+	return "approven://pair?" + q.Encode()
+}
+
+// lanIP is the address other devices on the network reach this
+// computer at: the source address of the default route. A UDP "dial"
+// sends nothing; it only asks the kernel which route it would use.
+func lanIP() string {
+	c, err := net.Dial("udp", "192.0.2.1:9")
+	if err != nil {
+		return "127.0.0.1"
+	}
+	defer c.Close()
+	return c.LocalAddr().(*net.UDPAddr).IP.String()
+}
+
+// showQR draws uri as a QR code in the terminal with qrencode, or
+// prints it as text when qrencode is not installed.
+func showQR(uri string) {
+	cmd := exec.Command("qrencode", "-t", "ANSIUTF8", "-m", "2", uri)
+	cmd.Stdout = os.Stdout
+	if cmd.Run() != nil {
+		fmt.Println(uri)
+	}
 }
 
 // sendEnrollAck tells the phone, on a fresh connection (the one

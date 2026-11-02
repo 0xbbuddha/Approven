@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
+import android.util.Log
 import com.approven.app.protocol.ApproveMessage
 
 /**
@@ -26,8 +27,8 @@ class ConnectionService : Service() {
         const val ACTION_DISCONNECT = "com.approven.app.DISCONNECT"
     }
 
-    private var connecting = false
     private var stoppedByUser = false
+    private val handler by lazy { android.os.Handler(mainLooper) }
 
     override fun onCreate() {
         super.onCreate()
@@ -35,73 +36,137 @@ class ConnectionService : Service() {
         startForeground(STATUS_NOTIFICATION_ID, buildStatusNotification("Not connected"))
 
         ConnectionManager.setListener(object : ConnectionManager.Listener {
-            override fun onConnected() {
-                connecting = false
-                updateStatusNotification("Connected to ${PairingStore(this@ConnectionService).computerHost}")
+            override fun onConnected(id: String) = refreshStatus()
+
+            override fun onDisconnected(id: String) {
+                refreshStatus()
+                if (!stoppedByUser) {
+                    reconnectSoon(id)
+                    rediscover(id)
+                }
             }
 
-            override fun onDisconnected() {
-                updateStatusNotification(if (connecting) "Connecting..." else "Not connected")
-                if (!stoppedByUser) reconnectSoon()
-            }
+            override fun onApproveRequest(id: String, msg: WireMessage) = alertApproval(id, msg)
 
-            override fun onApproveRequest(msg: WireMessage) {
-                alertApproval(msg)
-            }
+            override fun onEnrollRequest(id: String, msg: WireMessage) = alertEnroll(id, msg)
 
-            override fun onEnrollRequest(msg: WireMessage) {
-                alertEnroll(msg)
-            }
+            override fun onEnrollResult(id: String, msg: WireMessage) = notifyEnrollResult(id, msg)
 
-            override fun onEnrollResult(msg: WireMessage) {
-                notifyEnrollResult(msg)
-            }
-
-            override fun onCancel(msg: WireMessage) {
+            override fun onCancel(id: String, msg: WireMessage) {
                 // The computer gave up waiting: the alert would only lead to a dead request.
                 getSystemService(NotificationManager::class.java).cancel(ALERT_NOTIFICATION_ID)
             }
         })
 
-        connectIfConfigured()
+        sync()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_DISCONNECT) {
             stoppedByUser = true
-            ConnectionManager.disconnect()
-            updateStatusNotification("Not connected")
+            ConnectionManager.disconnectAll()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
         stoppedByUser = false
-        connectIfConfigured()
+        sync()
         return START_STICKY
     }
 
     override fun onDestroy() {
         ConnectionManager.setListener(null)
-        ConnectionManager.disconnect()
+        ConnectionManager.disconnectAll()
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun connectIfConfigured() {
+    /**
+     * Brings the connections in line with [PairingStore]: every computer
+     * that is not paused gets connected (a no-op when it already is),
+     * every connection to a forgotten or paused one is dropped. The app
+     * just restarts this service after changing the list.
+     */
+    private fun sync() {
         val store = PairingStore(this)
-        val host = store.computerHost ?: return
-        connecting = true
-        updateStatusNotification("Connecting...")
-        ConnectionManager.connect(host, store.computerPort, store.pinnedFingerprint, store.deviceId, store.deviceName)
+        val wanted = store.computers.filter { !it.paused }
+        (ConnectionManager.linkIds - wanted.map { it.id }.toSet()).forEach(ConnectionManager::disconnect)
+        wanted.forEach { ConnectionManager.connect(it, store.deviceId, store.deviceName) }
+        refreshStatus()
     }
 
-    private fun reconnectSoon() {
-        // A short, fixed backoff is enough for v1: the common case is a
-        // Wi-Fi blip or the computer sleeping, not a permanently gone
-        // peer. A phone that never finds the computer again just stays
-        // in "Not connected", which status already shows truthfully.
-        android.os.Handler(mainLooper).postDelayed({ if (!stoppedByUser) connectIfConfigured() }, 5000)
+    private fun reconnectSoon(id: String) {
+        // A short, fixed backoff: the common case is a Wi-Fi blip or the
+        // computer sleeping, not a permanently gone peer.
+        handler.postDelayed({
+            val store = PairingStore(this)
+            val c = store.computer(id)
+            if (!stoppedByUser && c != null && !c.paused) ConnectionManager.connect(c, store.deviceId, store.deviceName)
+        }, 5000)
+    }
+
+    private val lastDiscovery = mutableMapOf<String, Long>()
+
+    /**
+     * The saved address stopped answering: look for the computer on the
+     * local network (mDNS, `_approven._tcp`, announced by the daemon
+     * through avahi) and, if it turns up at a new address, move there.
+     * Matched by the certificate fingerprint in its TXT record, never by
+     * name - and the TLS pin still has the final say on connect. At most
+     * once a minute per computer, so an offline one does not keep the
+     * radio busy.
+     */
+    private fun rediscover(id: String) {
+        val c = PairingStore(this).computer(id) ?: return
+        val pin = c.pin ?: return
+        val now = System.currentTimeMillis()
+        if (now - (lastDiscovery[id] ?: 0) < 60_000) return
+        lastDiscovery[id] = now
+
+        val nsd = getSystemService(android.net.nsd.NsdManager::class.java)
+        val discovery = object : android.net.nsd.NsdManager.DiscoveryListener {
+            override fun onServiceFound(info: android.net.nsd.NsdServiceInfo) {
+                @Suppress("DEPRECATION") // its replacement needs API 34; minSdk is 29
+                nsd.resolveService(info, object : android.net.nsd.NsdManager.ResolveListener {
+                    override fun onServiceResolved(r: android.net.nsd.NsdServiceInfo) {
+                        val fp = r.attributes["fp"]?.toString(Charsets.UTF_8)
+                        val host = r.host?.hostAddress ?: return
+                        if (fp != pin || host == c.host) return
+                        Log.i("ConnectionService", "[$id] found at $host over mDNS")
+                        val store = PairingStore(this@ConnectionService)
+                        store.update(id) { it.copy(host = host, port = r.port) }
+                        handler.post { store.computer(id)?.let { ConnectionManager.connect(it, store.deviceId, store.deviceName) } }
+                    }
+
+                    override fun onResolveFailed(info: android.net.nsd.NsdServiceInfo, errorCode: Int) {}
+                })
+            }
+
+            override fun onServiceLost(info: android.net.nsd.NsdServiceInfo) {}
+            override fun onDiscoveryStarted(serviceType: String) {}
+            override fun onDiscoveryStopped(serviceType: String) {}
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {}
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
+        }
+        try {
+            nsd.discoverServices("_approven._tcp", android.net.nsd.NsdManager.PROTOCOL_DNS_SD, discovery)
+            handler.postDelayed({ runCatching { nsd.stopServiceDiscovery(discovery) } }, 15_000)
+        } catch (e: Exception) {
+            Log.w("ConnectionService", "mDNS discovery failed: $e")
+        }
+    }
+
+    private fun refreshStatus() {
+        val store = PairingStore(this)
+        val up = ConnectionManager.states.value.filterValues { it == ConnectionManager.State.CONNECTED }.keys
+        val names = store.computers.filter { it.id in up }.map { it.name }
+        updateStatusNotification(
+            when {
+                names.isEmpty() -> if (store.computers.isEmpty()) "No computer yet" else "Not connected"
+                else -> "Connected to ${names.joinToString()}"
+            },
+        )
     }
 
     /**
@@ -115,9 +180,10 @@ class ConnectionService : Service() {
      * uses - everything else here (a normal tap-to-open notification)
      * remains blocked the same way startActivity was.
      */
-    private fun alertApproval(msg: WireMessage) {
+    private fun alertApproval(computer: String, msg: WireMessage) {
         val intent = Intent(this, ApprovalActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra("computer", computer)
             putExtra("kind", "approve")
             putExtra("id", msg.id)
             putExtra("host", msg.host)
@@ -130,12 +196,14 @@ class ConnectionService : Service() {
             putExtra("nonce", msg.nonce)
         }
         val what = msg.command.ifEmpty { msg.service }
-        showFullScreenAlert(intent, "Approve sudo? · ${ApproveMessage.checkCode(msg.nonce)}", "$what for ${msg.user} on ${msg.host}")
+        val title = if (msg.service == "sudo") "Approve sudo?" else "Approve admin access?"
+        showFullScreenAlert(intent, "$title · ${ApproveMessage.checkCode(msg.nonce)}", "$what for ${msg.user} on ${msg.host}")
     }
 
-    private fun alertEnroll(msg: WireMessage) {
+    private fun alertEnroll(computer: String, msg: WireMessage) {
         val intent = Intent(this, ApprovalActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra("computer", computer)
             putExtra("kind", "enroll")
             putExtra("id", msg.id)
             putExtra("host", msg.host)
@@ -158,9 +226,10 @@ class ConnectionService : Service() {
      * background-started activity update can be silently dropped the
      * same way a fresh approval request's startActivity can be.
      */
-    private fun notifyEnrollResult(msg: WireMessage) {
+    private fun notifyEnrollResult(computer: String, msg: WireMessage) {
         val intent = Intent(this, ApprovalActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra("computer", computer)
             putExtra("kind", "enroll_result")
             putExtra("id", msg.id)
             putExtra("ok", msg.approved)
@@ -182,6 +251,15 @@ class ConnectionService : Service() {
     }
 
     private fun showFullScreenAlert(activityIntent: Intent, title: String, text: String) {
+        // Shown directly when the app is on screen: Android allows that from
+        // a visible app, and without full-screen-intent permission (not
+        // granted by default since Android 14) the notification below
+        // would only sit in the shade. From the background Android just
+        // drops this call, and the notification is the way in.
+        try {
+            startActivity(activityIntent)
+        } catch (_: Exception) {
+        }
         val fullScreenPendingIntent = PendingIntent.getActivity(
             this, ALERT_NOTIFICATION_ID, activityIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,

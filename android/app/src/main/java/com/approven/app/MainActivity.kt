@@ -1,11 +1,15 @@
 package com.approven.app
 
 import android.Manifest
+import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.text.format.DateUtils
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -60,12 +64,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.approven.app.ConnectionManager.State
+import com.approven.app.protocol.PairingUri
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import java.util.UUID
 
 /**
- * Home screen: live connection status, the paired computer, and the
- * recent approvals. Pairing itself still has no UI beyond "connect and
- * wait": the enrollment prompt happens in [ApprovalActivity] once the
- * computer's `enroll` command sends its request over this connection.
+ * Home screen: live status, the known computers, adding one (QR code or
+ * by hand), and the recent approvals. Enrollment itself happens in
+ * [ApprovalActivity] once a computer's `enroll` command sends its
+ * request over the connection made here.
  */
 class MainActivity : ComponentActivity() {
     private val requestNotificationPermission = registerForActivityResult(
@@ -78,9 +87,10 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var store: PairingStore
 
-    // Re-read on every resume: ApprovalActivity writes these while this screen sits underneath.
-    private var enrolled by mutableStateOf(false)
+    // Re-read on every resume and after every change: ApprovalActivity writes the store while this screen sits underneath.
+    private var computers by mutableStateOf(emptyList<PairingStore.Computer>())
     private var history by mutableStateOf(emptyList<PairingStore.Event>())
+    private var fullScreenBlocked by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -100,35 +110,86 @@ class MainActivity : ComponentActivity() {
 
         setContent { ApprovenTheme { Home() } }
 
-        if (store.computerHost != null) connect()
+        if (store.computers.isNotEmpty()) sync()
     }
 
     override fun onResume() {
         super.onResume()
-        enrolled = store.isEnrolled
+        reload()
+        // Not granted by default since Android 14: without it a request
+        // never opens on its own, it only waits in the notification shade.
+        fullScreenBlocked = Build.VERSION.SDK_INT >= 34 &&
+            !getSystemService(NotificationManager::class.java).canUseFullScreenIntent()
+    }
+
+    private fun reload() {
+        computers = store.computers
         history = store.history
     }
 
-    private fun connect() = startForegroundService(Intent(this, ConnectionService::class.java))
+    /** Applies a change to the list: the service connects every listed computer and drops the rest. */
+    private fun sync() {
+        reload()
+        startForegroundService(Intent(this, ConnectionService::class.java))
+    }
 
-    private fun disconnect() = startService(Intent(this, ConnectionService::class.java).setAction(ConnectionService.ACTION_DISCONNECT))
+    private fun scanQr() {
+        val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
+        GmsBarcodeScanning.getClient(this, options).startScan()
+            .addOnSuccessListener { code ->
+                val p = PairingUri.parse(code.rawValue.orEmpty())
+                if (p == null) toast("That is not an Approven pairing code.") else addComputer(p.host, p.port, p.name, p.fingerprint)
+            }
+            .addOnFailureListener { toast("The QR scanner is not available: ${it.message}") }
+    }
+
+    /**
+     * A computer already in the list - same pinned certificate, or same
+     * address - is updated in place (a new QR code after its IP changed)
+     * rather than added twice. A different certificate for it means a
+     * reinstalled daemon: its old pairing no longer counts.
+     */
+    private fun addComputer(host: String, port: Int, name: String, pin: String?) {
+        val existing = store.computers.firstOrNull { (pin != null && it.pin == pin) || (it.host == host && it.port == port) }
+        store.save(
+            when {
+                existing == null -> PairingStore.Computer(UUID.randomUUID().toString(), host, port, name, pin)
+                pin != null && existing.pin != pin -> existing.copy(host = host, port = port, pin = pin, user = null, paused = false)
+                else -> existing.copy(host = host, port = port, paused = false)
+            },
+        )
+        sync()
+    }
+
+    private fun forget(c: PairingStore.Computer) {
+        store.remove(c.id)
+        ConnectionManager.disconnect(c.id)
+        // The keys are shared by every computer; only the last one going takes them along.
+        if (store.computers.isEmpty()) CryptoKeys.deleteAll()
+        sync()
+    }
+
+    private fun toast(text: String) = Toast.makeText(this, text, Toast.LENGTH_LONG).show()
 
     @Composable
     private fun Home() {
-        val state by ConnectionManager.state.collectAsState()
-        var host by remember { mutableStateOf(store.computerHost ?: "") }
-        var port by remember { mutableStateOf(store.computerPort.toString()) }
-        var editing by remember { mutableStateOf(false) }
-        var confirmForget by remember { mutableStateOf(false) }
-
+        val states by ConnectionManager.states.collectAsState()
         val test by ConnectionManager.test.collectAsState()
-        val ready = enrolled && state == State.CONNECTED
+        var adding by remember { mutableStateOf(false) }
+        var host by remember { mutableStateOf("") }
+        var port by remember { mutableStateOf(PairingStore.DEFAULT_PORT.toString()) }
+        var confirmForget by remember { mutableStateOf<PairingStore.Computer?>(null) }
+
+        fun stateOf(c: PairingStore.Computer) = states[c.id] ?: State.OFFLINE
+        val ready = computers.filter { it.enrolled && stateOf(it) == State.CONNECTED }
+        val unpaired = computers.any { !it.enrolled && stateOf(it) == State.CONNECTED }
+        val connecting = computers.any { stateOf(it) == State.CONNECTING }
         // Connected but not enrolled is not "ready": nothing can be approved yet.
         val color by animateColorAsState(
             when {
-                ready -> Mint
-                state == State.OFFLINE -> Muted
-                else -> Amber
+                ready.isNotEmpty() -> Mint
+                unpaired || connecting -> Amber
+                else -> Muted
             },
             label = "status",
         )
@@ -146,15 +207,17 @@ class MainActivity : ComponentActivity() {
                 Box(
                     Modifier
                         .clip(CircleShape)
-                        .clickable(enabled = ready, onClickLabel = "Test sudo") { ConnectionManager.requestTest() },
+                        .clickable(enabled = ready.isNotEmpty(), onClickLabel = "Test sudo") { ConnectionManager.requestTest(ready.first().id) },
                 ) {
-                    PulsingLogo(color, active = state != State.OFFLINE, size = 220.dp)
+                    PulsingLogo(color, active = ready.isNotEmpty() || unpaired || connecting, size = 220.dp)
                 }
                 Text(
-                    when (state) {
-                        State.CONNECTED -> if (enrolled) "Ready to approve" else "Not paired yet"
-                        State.CONNECTING -> "Looking for your computer…"
-                        State.OFFLINE -> "Offline"
+                    when {
+                        computers.isEmpty() -> "Add a computer"
+                        ready.isNotEmpty() -> "Ready to approve"
+                        unpaired -> "Not paired yet"
+                        connecting -> "Looking for your computer…"
+                        else -> "Offline"
                     },
                     fontSize = 26.sp,
                     fontWeight = FontWeight.Bold,
@@ -163,81 +226,67 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(4.dp))
                 Text(
                     when {
-                        ready -> "sudo for ${store.enrolledUser} on ${store.computerHost}"
-                        state == State.CONNECTED -> "Run sudo approve-cli enroll on the computer"
-                        store.computerHost != null -> "${store.computerHost}:${store.computerPort}"
-                        else -> "Pair a computer to get started"
+                        ready.isNotEmpty() -> "sudo on ${ready.joinToString { it.name }}"
+                        unpaired -> "Run sudo approve-cli enroll on the computer"
+                        computers.isEmpty() -> "Scan the code from sudo approve-cli enroll"
+                        else -> "${computers.size} computer${if (computers.size > 1) "s" else ""} known"
                     },
                     color = Muted,
                     fontSize = 15.sp,
                 )
-                Spacer(Modifier.height(16.dp))
-                StatusChip(
-                    when {
-                        ready -> "Connected"
-                        state == State.CONNECTED -> "Connected · not paired"
-                        state == State.CONNECTING -> "Connecting"
-                        else -> "Not connected"
-                    },
-                    color,
-                )
-                if (ready) {
+                if (ready.isNotEmpty()) {
                     Spacer(Modifier.height(12.dp))
                     TestStatus(test)
                 }
             }
 
-            if (!enrolled) {
-                SectionLabel("Pair a computer")
-                Panel {
-                    AddressFields(host, port, { host = it }, { port = it })
-                    Spacer(Modifier.height(16.dp))
-                    PrimaryButton(if (state == State.OFFLINE) "Connect" else "Reconnect") {
-                        saveAddress(host, port)
-                        connect()
-                    }
-                    Spacer(Modifier.height(20.dp))
-                    Step(1, "Connect to the computer's LAN IP, port 17165.")
-                    Step(2, "On the computer, run", "sudo approve-cli enroll")
-                    Step(3, "Approve here with your fingerprint.")
-                    Step(4, "Type the code this phone shows into the terminal.")
-                    if (store.computerHost != null) {
-                        TextButton(onClick = { confirmForget = true }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-                            Text("Forget this computer", color = Coral)
-                        }
+            if (fullScreenBlocked) {
+                Panel(Modifier.padding(bottom = 8.dp)) {
+                    Text("Let requests open on their own", color = Amber, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Android does not let Approven show a request full screen yet, so it only waits in your notifications.",
+                        color = Color.White, fontSize = 14.sp,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    PrimaryButton("Allow full-screen alerts") {
+                        startActivity(Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:$packageName")))
                     }
                 }
-            } else {
-                SectionLabel("Paired computer")
-                Panel {
-                    InfoRow("Computer", "${store.computerHost}:${store.computerPort}")
-                    InfoRow("User", store.enrolledUser ?: "")
-                    InfoRow("Certificate", store.pinnedFingerprint?.take(16)?.chunked(4)?.joinToString(" ") ?: "", mono = true)
+            }
 
-                    AnimatedVisibility(editing) {
-                        Column(Modifier.padding(top = 12.dp)) {
-                            AddressFields(host, port, { host = it }, { port = it })
-                        }
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        if (editing) {
-                            PrimaryButton("Save", Modifier.weight(1f)) {
-                                saveAddress(host, port)
-                                editing = false
-                                connect() // a new target takes over the old connection by itself
+            if (computers.isNotEmpty()) {
+                SectionLabel("Computers")
+                computers.forEach { c ->
+                    ComputerCard(c, stateOf(c), onForget = { confirmForget = c })
+                    Spacer(Modifier.height(12.dp))
+                }
+            }
+
+            SectionLabel("Add a computer")
+            Panel {
+                Step(1, "On the computer, run", "sudo approve-cli enroll")
+                Step(2, "Scan the QR code it shows.")
+                Step(3, "Approve here with your fingerprint, then type the code this phone shows into the terminal.")
+                Spacer(Modifier.height(12.dp))
+                PrimaryButton("Scan QR code") { scanQr() }
+                Spacer(Modifier.height(10.dp))
+                AnimatedVisibility(adding) {
+                    Column {
+                        AddressFields(host, port, { host = it }, { port = it })
+                        Spacer(Modifier.height(10.dp))
+                        PrimaryButton("Connect") {
+                            val h = host.trim()
+                            if (h.isNotEmpty()) {
+                                addComputer(h, port.toIntOrNull() ?: PairingStore.DEFAULT_PORT, h, null)
+                                adding = false
+                                host = ""
                             }
-                        } else if (state == State.OFFLINE) {
-                            PrimaryButton("Reconnect", Modifier.weight(1f)) { connect() }
-                        } else {
-                            GhostButton("Disconnect", Modifier.weight(1f)) { disconnect() }
                         }
-                        GhostButton(if (editing) "Cancel" else "Edit address", Modifier.weight(1f)) { editing = !editing }
-                    }
-                    TextButton(onClick = { confirmForget = true }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-                        Text("Forget this computer", color = Coral)
+                        Spacer(Modifier.height(10.dp))
                     }
                 }
+                GhostButton(if (adding) "Cancel" else "Enter the address by hand") { adding = !adding }
             }
 
             SectionLabel("Recent activity")
@@ -258,31 +307,80 @@ class MainActivity : ComponentActivity() {
             Spacer(Modifier.height(24.dp))
         }
 
-        if (confirmForget) {
+        confirmForget?.let { c ->
             AlertDialog(
-                onDismissRequest = { confirmForget = false },
+                onDismissRequest = { confirmForget = null },
                 containerColor = CardHigh,
-                title = { Text("Forget this computer?") },
-                text = { Text("This phone's key is deleted. Run `sudo approve-cli remove` on the computer too, then pair again to use Approven.") },
+                title = { Text("Forget ${c.name}?") },
+                text = { Text("This phone stops approving for it. Run `sudo approve-cli remove` on that computer too.") },
                 confirmButton = {
                     TextButton(onClick = {
-                        confirmForget = false
-                        disconnect()
-                        CryptoKeys.deleteAll()
-                        store.clear()
-                        enrolled = false
-                        history = emptyList()
-                        host = ""
+                        confirmForget = null
+                        forget(c)
                     }) { Text("Forget", color = Coral) }
                 },
-                dismissButton = { TextButton(onClick = { confirmForget = false }) { Text("Keep") } },
+                dismissButton = { TextButton(onClick = { confirmForget = null }) { Text("Keep") } },
             )
         }
     }
 
-    private fun saveAddress(host: String, port: String) {
-        store.computerHost = host.trim()
-        store.computerPort = port.toIntOrNull() ?: store.computerPort
+    @Composable
+    private fun ComputerCard(c: PairingStore.Computer, state: State, onForget: () -> Unit) {
+        var editing by remember(c.id) { mutableStateOf(false) }
+        var host by remember(c.id) { mutableStateOf(c.host) }
+        var port by remember(c.id) { mutableStateOf(c.port.toString()) }
+        val (label, color) = when {
+            c.paused -> "Paused" to Muted
+            state == State.CONNECTED && c.enrolled -> "Connected" to Mint
+            state == State.CONNECTED -> "Not paired" to Amber
+            state == State.CONNECTING -> "Connecting" to Amber
+            else -> "Offline" to Muted
+        }
+        Panel {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(c.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text("${c.host}:${c.port}", color = Muted, fontSize = 13.sp)
+                }
+                StatusChip(label, color)
+            }
+            Spacer(Modifier.height(8.dp))
+            if (c.enrolled) {
+                InfoRow("User", c.user.orEmpty())
+                InfoRow("Certificate", c.pin.orEmpty().take(16).chunked(4).joinToString(" "), mono = true)
+            } else {
+                Text("Not paired yet: run sudo approve-cli enroll on it.", color = Amber, fontSize = 14.sp)
+            }
+            AnimatedVisibility(editing) {
+                Column(Modifier.padding(top = 12.dp)) {
+                    AddressFields(host, port, { host = it }, { port = it })
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (editing) {
+                    PrimaryButton("Save", Modifier.weight(1f)) {
+                        store.update(c.id) { it.copy(host = host.trim(), port = port.toIntOrNull() ?: it.port) }
+                        editing = false
+                        sync() // a new target takes over the old connection by itself
+                    }
+                } else if (c.paused || state == State.OFFLINE) {
+                    PrimaryButton("Reconnect", Modifier.weight(1f)) {
+                        store.update(c.id) { it.copy(paused = false) }
+                        sync()
+                    }
+                } else {
+                    GhostButton("Disconnect", Modifier.weight(1f)) {
+                        store.update(c.id) { it.copy(paused = true) }
+                        sync()
+                    }
+                }
+                GhostButton(if (editing) "Cancel" else "Edit address", Modifier.weight(1f)) { editing = !editing }
+            }
+            TextButton(onClick = onForget, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                Text("Forget this computer", color = Coral)
+            }
+        }
     }
 }
 

@@ -8,6 +8,7 @@ import java.net.Socket
 import java.security.Principal
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLContext
@@ -18,14 +19,14 @@ import javax.net.ssl.X509ExtendedKeyManager
 import javax.net.ssl.X509TrustManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 
 /**
- * Owns the single TLS connection to the paired computer. A plain
- * singleton rather than something bound through the Service: the
- * approval UI (an Activity, which cannot easily bind to and block on a
- * Service synchronously) and the background Service both call into it
- * directly, which is fine for a single-process app with exactly one
- * live connection.
+ * Owns one TLS connection per known computer ([Link]), keyed by the
+ * computer's id in [PairingStore]. A plain singleton rather than
+ * something bound through the Service: the approval UI (an Activity,
+ * which cannot easily bind to and block on a Service synchronously) and
+ * the background Service both call into it directly.
  *
  * [connect] can legitimately be called more than once for the same
  * target - the Service calls it from both onCreate and onStartCommand,
@@ -42,8 +43,9 @@ import kotlinx.coroutines.flow.StateFlow
  * or deciding to reconnect - a stale call simply stops touching
  * anything instead of fighting the newer one for the same fields.
  *
- * Trust-on-first-use: with no pinned fingerprint yet (during
- * enrollment), any certificate is accepted - the real proof of trust at
+ * Trust-on-first-use, only for an address typed by hand: with no
+ * pinned fingerprint yet (a scanned QR code always brings one), any
+ * certificate is accepted - the real proof of trust at
  * that point is the human comparing the key code on both screens, the
  * same reference design docs/approve.md documents for the equivalent
  * step. Once enrollment records a fingerprint, every later connection
@@ -51,40 +53,19 @@ import kotlinx.coroutines.flow.StateFlow
  */
 object ConnectionManager {
     private const val TAG = "ConnectionManager"
+    private const val TEST_TIMEOUT_MS = 40_000L
 
+    /** Every callback names the computer ([PairingStore.Computer.id]) it came from. */
     interface Listener {
-        fun onConnected() {}
-        fun onDisconnected() {}
-        fun onApproveRequest(msg: WireMessage) {}
-        fun onEnrollRequest(msg: WireMessage) {}
-        fun onEnrollResult(msg: WireMessage) {}
-        fun onCancel(msg: WireMessage) {}
+        fun onConnected(id: String) {}
+        fun onDisconnected(id: String) {}
+        fun onApproveRequest(id: String, msg: WireMessage) {}
+        fun onEnrollRequest(id: String, msg: WireMessage) {}
+        fun onEnrollResult(id: String, msg: WireMessage) {}
+        fun onCancel(id: String, msg: WireMessage) {}
     }
 
-    @Volatile private var socket: Socket? = null
-    @Volatile private var out: OutputStream? = null
-    @Volatile private var listener: Listener? = null
-    @Volatile private var connectedFingerprint: String? = null
-    @Volatile private var target: Pair<String, Int>? = null
-    // True from the moment a connect() call commits to opening a socket
-    // until that attempt's connection (however long it lives) finally
-    // ends - the one piece of state a second, concurrent call for the
-    // same target actually needs to check before deciding to back off.
-    @Volatile private var active = false
-    private val generation = AtomicInteger(0)
-    private val executor = Executors.newCachedThreadPool()
-    private val writeLock = Any()
-    private val stateLock = Any()
-
     enum class State { OFFLINE, CONNECTING, CONNECTED }
-
-    private val _state = MutableStateFlow(State.OFFLINE)
-    /** What the UI shows; the Listener above stays the Service's channel. */
-    val state: StateFlow<State> = _state
-
-    private val _cancelled = MutableStateFlow<String?>(null)
-    /** ID of the last request the computer stopped waiting for - the approval screen closes on it. */
-    val cancelled: StateFlow<String?> = _cancelled
 
     sealed interface Test {
         data object Idle : Test
@@ -92,16 +73,51 @@ object ConnectionManager {
         data class Done(val ok: Boolean, val error: String) : Test
     }
 
+    @Volatile private var listener: Listener? = null
+    private val links = ConcurrentHashMap<String, Link>()
+    private val executor = Executors.newCachedThreadPool()
+
+    private val _states = MutableStateFlow<Map<String, State>>(emptyMap())
+    /** Each computer's connection state; a computer with no entry is offline. */
+    val states: StateFlow<Map<String, State>> = _states
+
+    private val _cancelled = MutableStateFlow<String?>(null)
+    /** ID of the last request a computer stopped waiting for - the approval screen closes on it. */
+    val cancelled: StateFlow<String?> = _cancelled
+
     private val _test = MutableStateFlow<Test>(Test.Idle)
     /** The home screen's "tap the logo" test sudo. */
     val test: StateFlow<Test> = _test
 
-    /** Asks the computer to run `sudo -k true`, which comes straight back here as an approval request. */
-    fun requestTest() {
+    fun setListener(l: Listener?) {
+        listener = l
+    }
+
+    /** Connects to a computer; a no-op when that exact target is already connected or connecting. */
+    fun connect(c: PairingStore.Computer, deviceId: String, deviceName: String) =
+        links.getOrPut(c.id) { Link(c.id) }.connect(c.host, c.port, c.pin, deviceId, deviceName)
+
+    fun disconnect(id: String) {
+        links.remove(id)?.disconnect()
+        _states.update { it - id }
+    }
+
+    fun disconnectAll() = links.keys.toList().forEach(::disconnect)
+
+    /** Ids this manager currently holds a connection (or attempt) for. */
+    val linkIds: Set<String> get() = links.keys.toSet()
+
+    fun send(id: String, msg: WireMessage): Boolean = links[id]?.send(msg) ?: false
+
+    /** The certificate fingerprint of a computer's current connection - pinned right after enrollment. */
+    fun serverFingerprint(id: String): String? = links[id]?.connectedFingerprint
+
+    /** Asks a computer to run `sudo -k true`, which comes straight back here as an approval request. */
+    fun requestTest(id: String) {
         if (_test.value == Test.Running) return
         _test.value = Test.Running
         executor.execute {
-            if (!send(WireMessage(type = "test_sudo"))) {
+            if (!send(id, WireMessage(type = "test_sudo"))) {
                 _test.value = Test.Done(false, "Not connected")
                 return@execute
             }
@@ -112,154 +128,147 @@ object ConnectionManager {
         }
     }
 
-    private const val TEST_TIMEOUT_MS = 40_000L
-
-    fun setListener(l: Listener?) {
-        listener = l
-    }
-
-    val isConnected: Boolean
-        get() = socket?.isConnected == true && socket?.isClosed == false
+    private fun setState(id: String, s: State) = _states.update { it + (id to s) }
 
     /**
-     * Connects to host:port. A call for the same target while a
-     * connection to it is already open or being established is a
-     * no-op: the existing attempt owns the current generation and this
-     * call has nothing to add. A call for a *different* target (the
-     * user re-pairs to another computer) does take over, the same way
-     * [disconnect] always does.
+     * One computer's connection. [connect] can legitimately be called more
+     * than once for the same target - the Service calls it from both
+     * onCreate and onStartCommand. [generation] keeps 2 such calls from
+     * fighting: each call that actually opens a socket owns a generation
+     * number, and every step after the connect checks it still holds the
+     * current one before touching shared state or deciding to reconnect.
      */
-    fun connect(host: String, port: Int, pinnedFingerprint: String?, deviceId: String, deviceName: String) {
-        val myGen: Int
-        synchronized(stateLock) {
-            if (active && target == Pair(host, port)) {
-                return // already connecting or connected to this exact target
+    private class Link(val id: String) {
+        @Volatile private var socket: Socket? = null
+        @Volatile private var out: OutputStream? = null
+        @Volatile var connectedFingerprint: String? = null
+        @Volatile private var target: Pair<String, Int>? = null
+        // True from the moment a connect() commits to opening a socket
+        // until that attempt's connection finally ends.
+        @Volatile private var active = false
+        private val generation = AtomicInteger(0)
+        private val writeLock = Any()
+        private val stateLock = Any()
+
+        fun connect(host: String, port: Int, pinnedFingerprint: String?, deviceId: String, deviceName: String) {
+            val myGen: Int
+            synchronized(stateLock) {
+                if (active && target == Pair(host, port)) {
+                    return // already connecting or connected to this exact target
+                }
+                target = Pair(host, port)
+                active = true
+                myGen = generation.incrementAndGet()
+                setState(id, State.CONNECTING)
+                try {
+                    socket?.close()
+                } catch (_: Exception) {
+                }
+                socket = null
+                out = null
             }
-            target = Pair(host, port)
-            active = true
-            myGen = generation.incrementAndGet()
-            _state.value = State.CONNECTING
-            try {
-                socket?.close()
-            } catch (_: Exception) {
-            }
-            socket = null
-            out = null
-        }
 
-        executor.execute {
-            try {
-                val trustManager = pinningTrustManager(pinnedFingerprint)
-                val context = SSLContext.getInstance("TLSv1.3")
-                context.init(arrayOf(clientKeyManager()), arrayOf<TrustManager>(trustManager), null)
-                val raw = context.socketFactory.createSocket(host, port) as SSLSocket
-                raw.startHandshake()
+            executor.execute {
+                try {
+                    val context = SSLContext.getInstance("TLSv1.3")
+                    context.init(arrayOf(clientKeyManager()), arrayOf<TrustManager>(pinningTrustManager(pinnedFingerprint)), null)
+                    val raw = context.socketFactory.createSocket(host, port) as SSLSocket
+                    raw.startHandshake()
 
-                if (!stillCurrent(myGen)) {
-                    raw.close()
-                    return@execute
-                }
-
-                val cert = raw.session.peerCertificates.firstOrNull() as? X509Certificate
-                val fingerprint = cert?.let { sha256Hex(it.encoded) }
-
-                synchronized(stateLock) {
-                    if (!stillCurrent(myGen)) {
-                        raw.close()
-                        return@execute
-                    }
-                    socket = raw
-                    out = raw.getOutputStream()
-                    connectedFingerprint = fingerprint
-                    _state.value = State.CONNECTED
-                }
-                send(WireMessage(type = "hello", deviceId = deviceId, deviceName = deviceName))
-                listener?.onConnected()
-
-                val reader = BufferedReader(InputStreamReader(raw.getInputStream(), Charsets.UTF_8))
-                while (stillCurrent(myGen)) {
-                    val line = reader.readLine() ?: break
-                    handleLine(line)
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "connection ended: ${e.message}")
-            } finally {
-                if (stillCurrent(myGen)) {
+                    val cert = raw.session.peerCertificates.firstOrNull() as? X509Certificate
                     synchronized(stateLock) {
-                        if (stillCurrent(myGen)) {
-                            socket = null
-                            out = null
-                            active = false
-                            _state.value = State.OFFLINE
-                            if (_test.value == Test.Running) _test.value = Test.Done(false, "Connection lost")
+                        if (!stillCurrent(myGen)) {
+                            raw.close()
+                            return@execute
                         }
+                        socket = raw
+                        out = raw.getOutputStream()
+                        connectedFingerprint = cert?.let { sha256Hex(it.encoded) }
+                        setState(id, State.CONNECTED)
                     }
-                    listener?.onDisconnected()
+                    send(WireMessage(type = "hello", deviceId = deviceId, deviceName = deviceName))
+                    listener?.onConnected(id)
+
+                    val reader = BufferedReader(InputStreamReader(raw.getInputStream(), Charsets.UTF_8))
+                    while (stillCurrent(myGen)) {
+                        val line = reader.readLine() ?: break
+                        handleLine(line)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "[$id] connection ended: ${e.message}")
+                } finally {
+                    if (stillCurrent(myGen)) {
+                        synchronized(stateLock) {
+                            if (stillCurrent(myGen)) {
+                                socket = null
+                                out = null
+                                active = false
+                                setState(id, State.OFFLINE)
+                                _test.compareAndSet(Test.Running, Test.Done(false, "Connection lost"))
+                            }
+                        }
+                        listener?.onDisconnected(id)
+                    }
                 }
             }
         }
-    }
 
-    private fun stillCurrent(myGen: Int) = generation.get() == myGen
+        private fun stillCurrent(myGen: Int) = generation.get() == myGen
 
-    /** The fingerprint of the certificate presented by the most recent connection - read right after a successful enrollment, to pin it. */
-    val lastServerFingerprint: String?
-        get() = connectedFingerprint
-
-    fun disconnect() {
-        synchronized(stateLock) {
-            generation.incrementAndGet() // invalidates any in-flight connect()'s loop and cleanup
-            target = null
-            active = false
-            _state.value = State.OFFLINE
-            try {
-                socket?.close()
-            } catch (_: Exception) {
+        fun disconnect() {
+            synchronized(stateLock) {
+                generation.incrementAndGet() // invalidates any in-flight connect()'s loop and cleanup
+                target = null
+                active = false
+                try {
+                    socket?.close()
+                } catch (_: Exception) {
+                }
+                socket = null
+                out = null
             }
-            socket = null
-            out = null
         }
-    }
 
-    private fun handleLine(line: String) {
-        if (line.isBlank()) return
-        val msg = try {
-            WireMessage.fromJson(line)
-        } catch (e: Exception) {
-            Log.w(TAG, "bad line from computer: $e")
-            return
-        }
-        Log.d(TAG, "received: ${msg.type} id=${msg.id}")
-        when (msg.type) {
-            "approve_request" -> listener?.onApproveRequest(msg)
-            "enroll_request" -> listener?.onEnrollRequest(msg)
-            "enroll_result" -> listener?.onEnrollResult(msg)
-            "cancel" -> {
-                _cancelled.value = msg.id
-                listener?.onCancel(msg)
+        private fun handleLine(line: String) {
+            if (line.isBlank()) return
+            val msg = try {
+                WireMessage.fromJson(line)
+            } catch (e: Exception) {
+                Log.w(TAG, "[$id] bad line from computer: $e")
+                return
             }
-            "test_result" -> _test.value = Test.Done(msg.approved, msg.error)
-            else -> Log.w(TAG, "unknown message type: ${msg.type}")
+            Log.d(TAG, "[$id] received: ${msg.type} id=${msg.id}")
+            when (msg.type) {
+                "approve_request" -> listener?.onApproveRequest(id, msg)
+                "enroll_request" -> listener?.onEnrollRequest(id, msg)
+                "enroll_result" -> listener?.onEnrollResult(id, msg)
+                "cancel" -> {
+                    _cancelled.value = msg.id
+                    listener?.onCancel(id, msg)
+                }
+                "test_result" -> _test.value = Test.Done(msg.approved, msg.error)
+                else -> Log.w(TAG, "[$id] unknown message type: ${msg.type}")
+            }
         }
-    }
 
-    /** Returns whether the write actually succeeded - a silent failure here was the whole point of a request reaching the phone, getting approved, and the computer still seeing only a timeout. */
-    fun send(msg: WireMessage): Boolean {
-        val stream = out
-        if (stream == null) {
-            Log.w(TAG, "send(${msg.type}): no connection")
-            return false
-        }
-        return try {
-            synchronized(writeLock) {
-                stream.write((msg.toJson() + "\n").toByteArray(Charsets.UTF_8))
-                stream.flush()
+        /** Returns whether the write actually succeeded - a silent failure here was the whole point of a request reaching the phone, getting approved, and the computer still seeing only a timeout. */
+        fun send(msg: WireMessage): Boolean {
+            val stream = out
+            if (stream == null) {
+                Log.w(TAG, "[$id] send(${msg.type}): no connection")
+                return false
             }
-            Log.d(TAG, "sent: ${msg.type} id=${msg.id}")
-            true
-        } catch (e: Exception) {
-            Log.w(TAG, "send(${msg.type}) failed: $e")
-            false
+            return try {
+                synchronized(writeLock) {
+                    stream.write((msg.toJson() + "\n").toByteArray(Charsets.UTF_8))
+                    stream.flush()
+                }
+                Log.d(TAG, "[$id] sent: ${msg.type} id=${msg.id}")
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "[$id] send(${msg.type}) failed: $e")
+                false
+            }
         }
     }
 
