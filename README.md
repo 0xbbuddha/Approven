@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="approven logo: a fingerprint turning into a checkmark, with Tux" width="260">
+</p>
+
 # Approven
 
 Approve `sudo` with your phone's fingerprint. An EC P-256 key lives in
