@@ -4,6 +4,7 @@ import android.util.Log
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStream
+import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.Principal
 import java.security.PrivateKey
@@ -54,6 +55,7 @@ import kotlinx.coroutines.flow.update
 object ConnectionManager {
     private const val TAG = "ConnectionManager"
     private const val TEST_TIMEOUT_MS = 40_000L
+    private const val CONNECT_TIMEOUT_MS = 5_000
 
     /** Every callback names the computer ([PairingStore.Computer.id]) it came from. */
     interface Listener {
@@ -172,7 +174,11 @@ object ConnectionManager {
                 try {
                     val context = SSLContext.getInstance("TLSv1.3")
                     context.init(arrayOf(clientKeyManager()), arrayOf<TrustManager>(pinningTrustManager(pinnedFingerprint)), null)
-                    val raw = context.socketFactory.createSocket(host, port) as SSLSocket
+                    // A bounded connect: a stale address (the computer moved) must
+                    // fail in seconds, not the OS's minutes, so the reconnect and
+                    // the mDNS search for its new address start right away.
+                    val tcp = Socket().apply { connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS) }
+                    val raw = context.socketFactory.createSocket(tcp, host, port, true) as SSLSocket
                     raw.startHandshake()
 
                     val cert = raw.session.peerCertificates.firstOrNull() as? X509Certificate

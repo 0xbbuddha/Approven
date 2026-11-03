@@ -123,30 +123,45 @@ class ConnectionService : Service() {
         val now = System.currentTimeMillis()
         if (now - (lastDiscovery[id] ?: 0) < 60_000) return
         lastDiscovery[id] = now
+        Log.i("ConnectionService", "[$id] not answering at ${c.host}, looking it up")
+
+        // Plain DNS first: networks that filter multicast (most office and
+        // campus Wi-Fi, where mDNS never arrives) often resolve the
+        // hostname enrollment recorded, registered by their DHCP server.
+        Thread {
+            val addr = runCatching { java.net.InetAddress.getAllByName(c.name) }.getOrNull()
+                ?.firstOrNull { it is java.net.Inet4Address && !it.isLoopbackAddress }?.hostAddress
+            if (addr != null && addr != c.host) {
+                Log.i("ConnectionService", "[$id] ${c.name} resolves to $addr over DNS")
+                moveTo(id, addr, c.port)
+            }
+        }.start()
 
         val nsd = getSystemService(android.net.nsd.NsdManager::class.java)
         val discovery = object : android.net.nsd.NsdManager.DiscoveryListener {
             override fun onServiceFound(info: android.net.nsd.NsdServiceInfo) {
+                Log.i("ConnectionService", "[$id] mDNS found ${info.serviceName}")
                 @Suppress("DEPRECATION") // its replacement needs API 34; minSdk is 29
                 nsd.resolveService(info, object : android.net.nsd.NsdManager.ResolveListener {
                     override fun onServiceResolved(r: android.net.nsd.NsdServiceInfo) {
                         val fp = r.attributes["fp"]?.toString(Charsets.UTF_8)
                         val host = r.host?.hostAddress ?: return
+                        Log.i("ConnectionService", "[$id] mDNS resolved ${r.serviceName} at $host:${r.port}, fp matches: ${fp == pin}")
                         if (fp != pin || host == c.host) return
                         Log.i("ConnectionService", "[$id] found at $host over mDNS")
-                        val store = PairingStore(this@ConnectionService)
-                        store.update(id) { it.copy(host = host, port = r.port) }
-                        handler.post { store.computer(id)?.let { ConnectionManager.connect(it, store.deviceId, store.deviceName) } }
+                        moveTo(id, host, r.port)
                     }
 
-                    override fun onResolveFailed(info: android.net.nsd.NsdServiceInfo, errorCode: Int) {}
+                    override fun onResolveFailed(info: android.net.nsd.NsdServiceInfo, errorCode: Int) {
+                        Log.w("ConnectionService", "[$id] mDNS resolve of ${info.serviceName} failed: $errorCode")
+                    }
                 })
             }
 
             override fun onServiceLost(info: android.net.nsd.NsdServiceInfo) {}
-            override fun onDiscoveryStarted(serviceType: String) {}
+            override fun onDiscoveryStarted(serviceType: String) = Log.i("ConnectionService", "[$id] mDNS discovery started").let {}
             override fun onDiscoveryStopped(serviceType: String) {}
-            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {}
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) = Log.w("ConnectionService", "[$id] mDNS discovery failed: $errorCode").let {}
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
         }
         try {
@@ -155,6 +170,13 @@ class ConnectionService : Service() {
         } catch (e: Exception) {
             Log.w("ConnectionService", "mDNS discovery failed: $e")
         }
+    }
+
+    /** Saves a computer's new address and reconnects there; the TLS pin still decides whether it really is that computer. */
+    private fun moveTo(id: String, host: String, port: Int) {
+        val store = PairingStore(this)
+        store.update(id) { it.copy(host = host, port = port) }
+        handler.post { store.computer(id)?.let { ConnectionManager.connect(it, store.deviceId, store.deviceName) } }
     }
 
     private fun refreshStatus() {

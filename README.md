@@ -105,12 +105,22 @@ disconnect, edit address, forget).
 
 ### When the computer's address changes
 
-The daemon announces itself on the local network over mDNS
-(`_approven._tcp`, through `avahi-publish`, with its certificate
-fingerprint in the TXT record). When a paired computer stops
-answering at its saved address, the phone looks for that fingerprint
-on the network and moves to the new address on its own. Without avahi
-on the computer, edit the address in the app instead.
+When a paired computer stops answering at its saved address (the
+connection attempt gives up after 5 seconds), the phone looks for it
+two ways and moves to whichever answers - the TLS pin still decides
+on connect whether it really is that computer:
+
+1. **Plain DNS** on the computer's hostname (the one enrollment
+   recorded). Office and campus networks usually register DHCP
+   hostnames, and they are exactly the ones that filter multicast.
+2. **mDNS**: the daemon announces itself (`_approven._tcp`, through
+   `avahi-publish`, with its certificate fingerprint in the TXT
+   record), and the phone looks for the fingerprint it pinned. This
+   covers home networks, where hostnames often do not resolve.
+
+On a network that offers neither, edit the address in the app. For an
+address that never changes, Tailscale works: put the computer's
+Tailscale IP in the app with Tailscale running on the phone.
 
 ### polkit
 
