@@ -12,8 +12,9 @@ android {
         applicationId = "com.approven.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // Set by the release workflow from the tag; local builds say "dev".
+        versionCode = System.getenv("APPROVEN_VERSION_CODE")?.toIntOrNull() ?: 1
+        versionName = System.getenv("APPROVEN_VERSION")?.removePrefix("v") ?: "dev"
     }
 
     // The release key never lives in the repo: anyone holding it can ship

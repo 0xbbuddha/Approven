@@ -36,9 +36,11 @@ just mocked.
 
 ## Install
 
-Every push to `main` builds and publishes a
-[release](https://github.com/0xbbuddha/Approven/releases/latest) with an
-Arch package, a `PKGBUILD`, a Linux binary tarball, and the Android APK.
+Pushing a version tag (`git tag -a v0.2.0 -m "..." && git push origin
+v0.2.0`) builds and publishes a
+[release](https://github.com/0xbbuddha/Approven/releases/latest) named
+after it, with an Arch package, a `PKGBUILD` pinned to that tag, a
+Linux binary tarball, and the Android APK.
 
 ### Arch Linux
 
